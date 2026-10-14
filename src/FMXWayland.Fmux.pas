@@ -11,10 +11,13 @@
 /// conversions stay consistent; popups are placed relative to their parent and take the origin the compositor gives
 /// them.</para>
 /// <para>Painting: the paint context handed to FMX (the Ctx of TFmuxPaintCallback, the context handle of the canvas)
-/// is a Cairo context over a wl_shm frame for FMX.Canvas.Linux. The optional Skia raster canvas receives the
-/// PWlFrame directly and copies its bitmap into it through FmuxCanvasDrawBitmap.</para>
-/// <para>The function list with their status is in README.md; gen-fmux-api.ps1 reads the assignments in
-/// AssignFmuxApi (a "// partial: ..." comment after an assignment marks a function that is only partly done).</para>
+/// depends on FMX's canvas. FMX's default Linux canvas (FMX.Canvas.Linux: cairo and Pango, FMXWayland.Cairo) gets a
+/// cairo context over the window's retained frame; what changed is then copied into the wl_shm buffer that is
+/// attached to the surface. The Skia raster canvas (GlobalUseSkia) gets the PWlFrame, renders into an FMUX bitmap
+/// (plain memory) and copies it with FmuxCanvasDrawBitmap into the frame.</para>
+/// <para>The function list with their status is in docs/FMUX-STATUS.md; gen-fmux-api.ps1 reads the assignments in
+/// AssignFmuxApi and FMXWayland.Cairo.AssignCairoApi (a "// partial: ..." comment after an assignment marks a function
+/// that is only partly done).</para>
 /// </remarks>
 unit FMXWayland.Fmux;
 
@@ -43,13 +46,21 @@ type
     FTitlePixels: TArray<Cardinal>;
     FTitleWidth: Integer;
     FTitleHeight: Integer;
-    FPaintPixels: TArray<Byte>;
-    FPaintWidth, FPaintHeight: Integer;
+    // FMX's cairo canvas paints into FRetained, the window's latest frame (buffer pixels, no row padding); the
+    // wl_shm buffers rotate and hold older frames, so each gets what changed since the frame it holds.
+    FRetained: TArray<Cardinal>;
+    FRetainedWidth: Integer;
+    FRetainedHeight: Integer;
+    FRetainedSerial: Int64;
+    FDamage: array[0..7] of TRect;
+    FBufferSerials: TArray<TPair<Pointer, Int64>>;
     function Form: TCommonCustomForm;
     function WindowRect: TRectF;
     procedure SetWindowRect(const ARect: TRectF);
     procedure ReportBounds;
     procedure DumpFrame(const AFrame: PWlFrame);
+    procedure PaintCairo(const AFrame: PWlFrame; const ADirty: TRectF);
+    procedure CopyRetained(const AFrame: PWlFrame; const ARect: TRect);
     procedure RenderTitle(const AWidth, AHeight: Integer; const ATitle: string; const AActive: Boolean;
       const AScale: Single);
   protected
@@ -80,6 +91,11 @@ type
     procedure SetExternalPresentation(const AHandle: TWindowHandle; const AValue: Boolean);
   end;
 
+{$SCOPEDENUMS ON}
+  /// <summary>FMX's default canvas: its cairo canvas (FMX.Canvas.Linux) or another (Skia, a GPU canvas).</summary>
+  TFmuxCanvasKind = (Unknown, Cairo, Other);
+{$SCOPEDENUMS OFF}
+
 var
   GWakeProc: TFmuxWakeMainThreadProc = nil;
   GMainWindow: TFmuxWindow = nil;
@@ -88,6 +104,7 @@ var
   GClipboardText: string;
   GDumpDir: string;
   GNativeServiceRegistered: Boolean = False;
+  GCanvasKind: TFmuxCanvasKind = TFmuxCanvasKind.Unknown;
 
 {$REGION 'Helpers'}
 
@@ -246,47 +263,127 @@ begin
   end;
 end;
 
+/// True when FMX draws with its cairo canvas (FMX.Canvas.Linux: GlobalUseSkia is False).
+function DefaultCanvasIsCairo: Boolean;
+var
+  C: TClass;
+begin
+  if GCanvasKind = TFmuxCanvasKind.Unknown then
+  begin
+    C := TCanvasManager.DefaultCanvas;
+    if C = nil then
+      Exit(False);
+    GCanvasKind := TFmuxCanvasKind.Other;
+    while C <> nil do
+    begin
+      if C.ClassName = 'TLinuxCanvas' then
+        GCanvasKind := TFmuxCanvasKind.Cairo;
+      C := C.ClassParent;
+    end;
+  end;
+  Result := GCanvasKind = TFmuxCanvasKind.Cairo;
+end;
+
 procedure TFmuxWindow.DoPaint(const AFrame: PWlFrame; const ADirty: TRectF);
 var
   R: TRectF;
-  Context: Pointer;
 begin
   if not Assigned(FCreate.PaintCallback) then
     Exit;
-  R := ADirty;
-  if (TCanvasManager.DefaultCanvas <> nil) and (TCanvasManager.DefaultCanvas.ClassName = 'TLinuxCanvas') then
-  begin
-    if AFrame.Bits = nil then
-      Exit;
-    // Tell FMX about the same whole pixels that Wayland will damage. This also includes controls
-    // touching the rounded edge when FMX decides which controls to repaint.
-    R := RectF(Floor(ADirty.Left * AFrame.Scale) / AFrame.Scale,
-      Floor(ADirty.Top * AFrame.Scale) / AFrame.Scale,
-      Ceil(ADirty.Right * AFrame.Scale) / AFrame.Scale,
-      Ceil(ADirty.Bottom * AFrame.Scale) / AFrame.Scale);
-    // Rotating wl_shm buffers can contain older frames; retain the latest pixels outside the dirty region.
-    if (FPaintWidth <> AFrame.Width) or (FPaintHeight <> AFrame.Height) or
-      (Length(FPaintPixels) <> NativeInt(AFrame.Stride) * AFrame.Height) then
-    begin
-      FPaintPixels := nil;
-      SetLength(FPaintPixels, NativeInt(AFrame.Stride) * AFrame.Height);
-      FPaintWidth := AFrame.Width;
-      FPaintHeight := AFrame.Height;
-    end;
-    Move(FPaintPixels[0], AFrame.Bits^, Length(FPaintPixels));
-    Context := CreateCairoFrame(AFrame.Bits, AFrame.Width, AFrame.Height, AFrame.Stride, AFrame.Scale);
-    try
-      FCreate.PaintCallback(FCreate.Data, Context, PRectFArray(@R), 1);
-    finally
-      DestroyCairoFrame(Context);
-    end;
-    Move(AFrame.Bits^, FPaintPixels[0], Length(FPaintPixels));
-    AFrame.Drawn := True;
-  end
+  if DefaultCanvasIsCairo then
+    PaintCairo(AFrame, ADirty)
   else
+  begin
+    // The Skia raster canvas renders the whole window and copies it into the frame (FmuxCanvasDrawBitmap).
+    R := ADirty;
     FCreate.PaintCallback(FCreate.Data, AFrame, PRectFArray(@R), 1);
+  end;
   if (GDumpDir <> '') and AFrame.Drawn then
     DumpFrame(AFrame);
+end;
+
+procedure TFmuxWindow.PaintCairo(const AFrame: PWlFrame; const ADirty: TRectF);
+var
+  D: TRect;
+  R: TRectF;
+  Context: Pointer;
+  Held, Serial: Int64;
+  I: Integer;
+begin
+  if AFrame.Bits = nil then
+    Exit;
+  if (FRetainedWidth <> AFrame.Width) or (FRetainedHeight <> AFrame.Height) then
+  begin
+    FRetained := nil;
+    SetLength(FRetained, NativeInt(AFrame.Width) * AFrame.Height);
+    FRetainedWidth := AFrame.Width;
+    FRetainedHeight := AFrame.Height;
+    FBufferSerials := nil;
+    // A new frame holds nothing yet: FMX paints all of it.
+    D := Rect(0, 0, AFrame.Width, AFrame.Height);
+  end
+  else
+  begin
+    // Whole buffer pixels, the ones Wayland is told are damaged: FMX also repaints the controls that touch a
+    // partly covered pixel.
+    D := Rect(Floor(ADirty.Left * AFrame.Scale), Floor(ADirty.Top * AFrame.Scale), Ceil(ADirty.Right * AFrame.Scale),
+      Ceil(ADirty.Bottom * AFrame.Scale));
+    D.Intersect(Rect(0, 0, AFrame.Width, AFrame.Height));
+  end;
+  R := RectF(D.Left / AFrame.Scale, D.Top / AFrame.Scale, D.Right / AFrame.Scale, D.Bottom / AFrame.Scale);
+  try
+    Context := CreateCairoFrame(@FRetained[0], AFrame.Width, AFrame.Height, AFrame.Width * 4, AFrame.Scale);
+  except
+    on E: Exception do
+    begin
+      WlLogOnce('cairo', E.Message);
+      Exit;
+    end;
+  end;
+  try
+    FCreate.PaintCallback(FCreate.Data, Context, PRectFArray(@R), 1);
+  finally
+    DestroyCairoFrame(Context);
+  end;
+  Inc(FRetainedSerial);
+  FDamage[FRetainedSerial mod Length(FDamage)] := D;
+  // The buffer holds the frame it was last given (Held), or nothing known: copy what changed since then.
+  Held := 0;
+  for I := 0 to High(FBufferSerials) do
+    if FBufferSerials[I].Key = AFrame.Bits then
+      Held := FBufferSerials[I].Value;
+  if (Held <= 0) or (FRetainedSerial - Held > Length(FDamage)) then
+    CopyRetained(AFrame, Rect(0, 0, AFrame.Width, AFrame.Height))
+  else
+    for Serial := Held + 1 to FRetainedSerial do
+      CopyRetained(AFrame, FDamage[Serial mod Length(FDamage)]);
+  I := High(FBufferSerials);
+  while (I >= 0) and (FBufferSerials[I].Key <> AFrame.Bits) do
+    Dec(I);
+  if I < 0 then
+  begin
+    // Buffers are freed only when the size changes (FBufferSerials starts again then); a few are alive at a time.
+    if Length(FBufferSerials) >= 8 then
+      Delete(FBufferSerials, 0, 1);
+    FBufferSerials := FBufferSerials + [TPair<Pointer, Int64>.Create(AFrame.Bits, FRetainedSerial)];
+  end
+  else
+    FBufferSerials[I].Value := FRetainedSerial;
+  AFrame.Drawn := True;
+end;
+
+procedure TFmuxWindow.CopyRetained(const AFrame: PWlFrame; const ARect: TRect);
+var
+  R: TRect;
+  Y: Integer;
+begin
+  R := ARect;
+  R.Intersect(Rect(0, 0, Min(AFrame.Width, FRetainedWidth), Min(AFrame.Height, FRetainedHeight)));
+  if R.IsEmpty then
+    Exit;
+  for Y := R.Top to R.Bottom - 1 do
+    Move(FRetained[NativeInt(Y) * FRetainedWidth + R.Left],
+      (PByte(AFrame.Bits) + NativeInt(Y) * AFrame.Stride + R.Left * 4)^, R.Width * 4);
 end;
 
 procedure TFmuxWindow.DumpFrame(const AFrame: PWlFrame);
@@ -1057,7 +1154,8 @@ var
   DRow, SRow: PCardinal;
   Op: Cardinal;
 begin
-  if (TCanvasManager.DefaultCanvas <> nil) and (TCanvasManager.DefaultCanvas.ClassName = 'TLinuxCanvas') then
+  // FMX's cairo canvas (its window and bitmap contexts); the Skia raster canvas passes the frame.
+  if IsCairoContext(Ctx) then
   begin
     CairoDrawBitmap(Ctx, Bitmap, Src, Dst, Opacity, HighSpeed);
     Exit;

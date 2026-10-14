@@ -5,7 +5,10 @@
 /// through the FMUX canvas, text layout and bitmap codec functions, on the system's cairo, Pango and
 /// gdk-pixbuf (loaded at run time, FMXWayland.CairoApi).</summary>
 /// <remarks>The FMUX context handle is a TCairoContext: over a window frame (CreateCairoFrame, made by
-/// FMXWayland.Fmux for each paint) or over an FMUX bitmap (FmuxCreateContext, for TBitmap canvases).</remarks>
+/// FMXWayland.Fmux for each paint) or over an FMUX bitmap (FmuxCreateContext, for TBitmap canvases). What
+/// TLinuxCanvas expects: solid colors arrive with the opacity already in their alpha, gradients and bitmap brushes
+/// get it as the argument of FmuxCanvasFill/FmuxCanvasStroke; dash lengths are in units of the stroke width; FMX's
+/// radial gradients run from the edge (offset 0) to the center (offset 1).</remarks>
 unit FMXWayland.Cairo;
 
 interface
@@ -30,6 +33,8 @@ procedure AssignCairoApi;
 function CreateCairoFrame(Bits: Pointer; Width, Height, Stride: Integer; Scale: Single): Pointer;
 /// <summary>Frees a context of CreateCairoFrame or FmuxCreateContext.</summary>
 procedure DestroyCairoFrame(Context: Pointer); cdecl;
+/// <summary>True when Context is a context of this unit (FMX's cairo canvas), not a PWlFrame (Skia canvas).</summary>
+function IsCairoContext(Context: Pointer): Boolean;
 /// <summary>FmuxCanvasDrawBitmap for cairo contexts.</summary>
 procedure CairoDrawBitmap(Context, Bitmap: Pointer; Src, Dst: System.Types.TRectF; Opacity: Single;
   HighSpeed: Boolean); cdecl;
@@ -38,18 +43,28 @@ implementation
 
 uses
   System.SysUtils, System.UITypes, System.Math, System.Generics.Collections,
-  FMUX.Api, FMXWayland.CairoApi;
+  FMUX.Api, FMXWayland.CairoApi, FMXWayland.Log;
 
 type
+  /// <summary>What FmuxSave/FmuxRestore keep besides cairo's own state.</summary>
+  TCairoState = record
+    AlphaInSource: Boolean;
+    Degenerate: Boolean;
+  end;
+
   TCairoContext = class
     Surface, Cr: Pointer;
     Scale: Double;
     /// <summary>The current source already carries FMX's opacity (solid colors: TLinuxCanvas multiplies it into the
     /// color); gradients and bitmaps get it at Fill/Stroke.</summary>
     AlphaInSource: Boolean;
-    States: TList<Boolean>;
+    /// <summary>FMX set a matrix that cannot be inverted (a control scaled to 0): cairo would go into a permanent
+    /// error state, so it keeps the previous matrix and nothing is drawn until the next valid one.</summary>
+    Degenerate: Boolean;
+    States: TList<TCairoState>;
     constructor Create(Bits: Pointer; Width, Height, Stride: Integer; AScale: Double);
     destructor Destroy; override;
+    procedure CreateCr;
   end;
 
   /// <summary>A Pango layout and the UTF-16 -> UTF-8 index map of its text.</summary>
@@ -57,6 +72,8 @@ type
     Layout: Pointer;
     Text: string;
     Utf8: UTF8String;
+    /// <summary>Byte offset in Utf8 of each UTF-16 index of Text (the low surrogate of a pair has the offset of its
+    /// character), plus the length at Length(Text).</summary>
     ByteOffsets: TArray<Integer>;
     destructor Destroy; override;
     procedure SetText(const Value: string);
@@ -79,11 +96,18 @@ begin
   inherited Create;
   LoadGraphicsLibraries;
   Scale := AScale;
-  States := TList<Boolean>.Create;
+  States := TList<TCairoState>.Create;
   Surface := cairo_image_surface_create_for_data(Bits, CAIRO_FORMAT_ARGB32, Width, Height, Stride);
   Status := cairo_surface_status(Surface);
   if Status <> 0 then
     raise Exception.Create('FMXWayland: Cairo surface: ' + string(UTF8String(cairo_status_to_string(Status))));
+  CreateCr;
+end;
+
+procedure TCairoContext.CreateCr;
+var
+  Status: Integer;
+begin
   Cr := cairo_create(Surface);
   Status := cairo_status(Cr);
   if Status <> 0 then
@@ -116,6 +140,12 @@ begin
   TCairoContext(Context).Free;
 end;
 
+function IsCairoContext(Context: Pointer): Boolean;
+begin
+  // An object starts with its class (VMT) pointer; a PWlFrame starts with the address of its pixels.
+  Result := (Context <> nil) and (PPointer(Context)^ = Pointer(TCairoContext));
+end;
+
 function CreateContext(Bitmap: Pointer): Pointer; cdecl;
 var
   B: PFmuxBitmap;
@@ -127,9 +157,21 @@ begin
 end;
 
 procedure Save(Context: Pointer); cdecl;
+var
+  S: TCairoState;
 begin
+  if (C(Context).States.Count = 0) and (cairo_status(C(Context).Cr) <> 0) then
+  begin
+    // A bitmap's context lives as long as its canvas: start its next scene with a usable cairo context.
+    WlLogOnce('cairo-status', 'cairo: ' + string(UTF8String(cairo_status_to_string(cairo_status(C(Context).Cr)))));
+    cairo_destroy(C(Context).Cr);
+    C(Context).CreateCr;
+    C(Context).Degenerate := False;
+  end;
   cairo_save(C(Context).Cr);
-  C(Context).States.Add(C(Context).AlphaInSource);
+  S.AlphaInSource := C(Context).AlphaInSource;
+  S.Degenerate := C(Context).Degenerate;
+  C(Context).States.Add(S);
 end;
 
 procedure Restore(Context: Pointer); cdecl;
@@ -139,7 +181,8 @@ begin
   Last := C(Context).States.Count - 1;
   if Last < 0 then
     Exit;
-  C(Context).AlphaInSource := C(Context).States[Last];
+  C(Context).AlphaInSource := C(Context).States[Last].AlphaInSource;
+  C(Context).Degenerate := C(Context).States[Last].Degenerate;
   C(Context).States.Delete(Last);
   cairo_restore(C(Context).Cr);
 end;
@@ -147,7 +190,7 @@ end;
 procedure SetMatrix(Context: Pointer; M11, M12, M21, M22, M31, M32: Single); cdecl;
 var
   M: TCairoMatrix;
-  S: Double;
+  S, Det: Double;
 begin
   S := C(Context).Scale;
   M.XX := M11 * S;
@@ -156,7 +199,11 @@ begin
   M.YY := M22 * S;
   M.X0 := M31 * S;
   M.Y0 := M32 * S;
-  cairo_set_matrix(C(Context).Cr, @M);
+  Det := M.XX * M.YY - M.YX * M.XY;
+  C(Context).Degenerate := IsNan(Det) or IsInfinite(Det) or (Abs(Det) < 1E-12) or IsNan(M.X0) or IsNan(M.Y0) or
+    IsInfinite(M.X0) or IsInfinite(M.Y0);
+  if not C(Context).Degenerate then
+    cairo_set_matrix(C(Context).Cr, @M);
 end;
 
 procedure SetQuality(Context: Pointer; Quality: Integer); cdecl;
@@ -179,6 +226,14 @@ begin
   C(Context).AlphaInSource := True;
 end;
 
+/// Clips to nothing (what a clip rectangle under a degenerate matrix amounts to).
+procedure ClipEmpty(Context: Pointer);
+begin
+  cairo_new_path(C(Context).Cr);
+  cairo_rectangle(C(Context).Cr, 0, 0, 0, 0);
+  cairo_clip(C(Context).Cr);
+end;
+
 procedure SetClipRects(Context: Pointer; const Rects: PRectF; const Count: Integer); cdecl;
 var
   I: Integer;
@@ -189,6 +244,11 @@ var
 begin
   if (Rects = nil) or (Count <= 0) then
     Exit;
+  if C(Context).Degenerate then
+  begin
+    ClipEmpty(Context);
+    Exit;
+  end;
   // Update rectangles are pixel regions, not antialiased vector geometry. Fractional clips leave
   // old color behind when SOURCE clears them and multiply coverage again when controls are drawn.
   cairo_get_matrix(C(Context).Cr, @Matrix);
@@ -226,6 +286,11 @@ end;
 
 procedure IntersectClip(Context: Pointer; const R: TRectF); cdecl;
 begin
+  if C(Context).Degenerate then
+  begin
+    ClipEmpty(Context);
+    Exit;
+  end;
   cairo_new_path(C(Context).Cr);
   cairo_rectangle(C(Context).Cr, R.Left, R.Top, R.Width, R.Height);
   cairo_clip(C(Context).Cr);
@@ -235,6 +300,8 @@ procedure ExcludeClip(Context: Pointer; const R: TRectF); cdecl;
 var
   X1, Y1, X2, Y2: Double;
 begin
+  if C(Context).Degenerate then
+    Exit;
   cairo_clip_extents(C(Context).Cr, @X1, @Y1, @X2, @Y2);
   cairo_new_path(C(Context).Cr);
   cairo_rectangle(C(Context).Cr, X1, Y1, X2 - X1, Y2 - Y1);
@@ -260,6 +327,8 @@ procedure ClearRect(Context: Pointer; R: TRectF; Color: TAlphaColor); cdecl;
 var
   Matrix: TCairoMatrix;
 begin
+  if C(Context).Degenerate then
+    Exit;
   Save(Context);
   try
     cairo_get_matrix(C(Context).Cr, @Matrix);
@@ -273,16 +342,19 @@ begin
   end;
 end;
 
+procedure AddStop(Pattern: Pointer; Offset: Double; Color: Cardinal);
+begin
+  cairo_pattern_add_color_stop_rgba(Pattern, Offset, ((Color shr 16) and 255) / 255, ((Color shr 8) and 255) / 255,
+    (Color and 255) / 255, (Color shr 24) / 255);
+end;
+
 procedure SetStops(Pattern: Pointer; Stops: PFmuxGradient; Count: Integer);
 var
   I: Integer;
-  Color: Cardinal;
 begin
   for I := 0 to Count - 1 do
   begin
-    Color := Stops.Color;
-    cairo_pattern_add_color_stop_rgba(Pattern, Stops.Offset, ((Color shr 16) and 255) / 255,
-      ((Color shr 8) and 255) / 255, (Color and 255) / 255, (Color shr 24) / 255);
+    AddStop(Pattern, Stops.Offset, Stops.Color);
     Inc(Stops);
   end;
   cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_PAD);
@@ -306,10 +378,19 @@ procedure SetRadialGradient(Context: Pointer; Center, P1, P2: TPointF; Stops: PF
 var
   Pattern: Pointer;
   M: TCairoMatrix;
+  I: Integer;
+  Stop: PFmuxGradient;
 begin
+  // The ellipse inscribed in P1-P2 around Center; cairo's offset 0 is the center, FMX's is the edge.
   Pattern := cairo_pattern_create_radial(0, 0, 0, 0, 0, 1);
   try
-    SetStops(Pattern, Stops, Count);
+    for I := Count - 1 downto 0 do
+    begin
+      Stop := Stops;
+      Inc(Stop, I);
+      AddStop(Pattern, 1 - Stop.Offset, Stop.Color);
+    end;
+    cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_PAD);
     FillChar(M, SizeOf(M), 0);
     M.XX := 1 / Max(0.0001, Abs(P2.X - P1.X) / 2);
     M.YY := 1 / Max(0.0001, Abs(P2.Y - P1.Y) / 2);
@@ -331,22 +412,36 @@ begin
   Result := cairo_image_surface_create_for_data(B.Data, CAIRO_FORMAT_ARGB32, B.Width, B.Height, B.Width * 4);
 end;
 
+/// A bitmap that can be drawn: memory and a size.
+function BitmapUsable(Bitmap: Pointer): Boolean;
+begin
+  Result := (Bitmap <> nil) and (PFmuxBitmap(Bitmap).Data <> nil) and (PFmuxBitmap(Bitmap).Width > 0) and
+    (PFmuxBitmap(Bitmap).Height > 0);
+end;
+
 procedure SetBitmap(Context, Bitmap: Pointer; R: TRectF; Mode: Integer); cdecl;
+const
+  // TWrapMode
+  Tile = 0;
+  TileOriginal = 1;
+  TileStretch = 2;
 var
   Surface, Pattern: Pointer;
   M: TCairoMatrix;
   B: PFmuxBitmap;
 begin
   B := Bitmap;
-  if (B = nil) or (B.Data = nil) then
+  if not BitmapUsable(B) then
     Exit;
   Surface := BitmapSurface(Bitmap);
   Pattern := cairo_pattern_create_for_surface(Surface);
   try
+    // Tile repeats the bitmap at its size from the rectangle's corner, TileOriginal draws it there once,
+    // TileStretch stretches it over the rectangle.
     FillChar(M, SizeOf(M), 0);
     M.XX := 1;
     M.YY := 1;
-    if (Mode <> 1) and (R.Width > 0) and (R.Height > 0) then
+    if (Mode = TileStretch) and (R.Width > 0) and (R.Height > 0) then
     begin
       M.XX := B.Width / R.Width;
       M.YY := B.Height / R.Height;
@@ -354,10 +449,14 @@ begin
     M.X0 := -R.Left * M.XX;
     M.Y0 := -R.Top * M.YY;
     cairo_pattern_set_matrix(Pattern, @M);
-    if Mode = 2 then
-      cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_PAD)
+    case Mode of
+      Tile:
+        cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_REPEAT);
+      TileOriginal:
+        cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_NONE);
     else
-      cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_REPEAT);
+      cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_PAD);
+    end;
     cairo_set_source(C(Context).Cr, Pattern);
     C(Context).AlphaInSource := False;
   finally
@@ -427,6 +526,11 @@ end;
 
 procedure DrawPath(Context: Pointer; Opacity: Single; Stroke: Boolean);
 begin
+  if C(Context).Degenerate or ((Opacity <= 0) and not C(Context).AlphaInSource) then
+  begin
+    cairo_new_path(C(Context).Cr);
+    Exit;
+  end;
   if C(Context).AlphaInSource or (Opacity >= 1) then
   begin
     if Stroke then
@@ -436,13 +540,16 @@ begin
     Exit;
   end;
   cairo_save(C(Context).Cr);
-  cairo_push_group(C(Context).Cr);
   if Stroke then
-    cairo_stroke(C(Context).Cr)
+  begin
+    cairo_push_group(C(Context).Cr);
+    cairo_stroke(C(Context).Cr);
+    cairo_pop_group_to_source(C(Context).Cr);
+  end
   else
-    cairo_fill(C(Context).Cr);
-  cairo_pop_group_to_source(C(Context).Cr);
-  cairo_paint_with_alpha(C(Context).Cr, EnsureRange(Opacity, 0, 1));
+    // The path as a clip and the source painted through it: the fill with an opacity, without a group.
+    cairo_clip(C(Context).Cr);
+  cairo_paint_with_alpha(C(Context).Cr, Opacity);
   cairo_restore(C(Context).Cr);
 end;
 
@@ -463,7 +570,12 @@ end;
 
 procedure SetStrokeCap(Context: Pointer; Cap: Integer); cdecl;
 begin
-  cairo_set_line_cap(C(Context).Cr, EnsureRange(Cap, 0, 2));
+  // TStrokeCap: Flat, Round. FMX's other canvases (Direct2D, Skia) draw Flat with square caps: lines and dashes
+  // reach half the width beyond their ends.
+  if Cap = 1 then
+    cairo_set_line_cap(C(Context).Cr, CAIRO_LINE_CAP_ROUND)
+  else
+    cairo_set_line_cap(C(Context).Cr, CAIRO_LINE_CAP_SQUARE);
 end;
 
 procedure SetStrokeJoin(Context: Pointer; Join: Integer); cdecl;
@@ -472,49 +584,88 @@ begin
 end;
 
 procedure SetStrokeDash(Context: Pointer; Offset: Single; DashArray: Pointer; Length: Integer); cdecl;
+
+  function Value(const AIndex: Integer): Single;
+  begin
+    Result := PSingle(PByte(DashArray) + AIndex * SizeOf(Single))^;
+  end;
+
+  function Matches(const APreset: array of Single): Boolean;
+  var
+    K: Integer;
+  begin
+    Result := High(APreset) + 1 = Length;
+    if Result then
+      for K := 0 to High(APreset) do
+        if Value(K) <> APreset[K] then
+          Exit(False);
+  end;
+
 var
   Dashes: TArray<Double>;
-  Values: PSingle;
   I: Integer;
-  Width: Double;
+  Width, Cap: Double;
 begin
-  if (DashArray = nil) or (Length <= 0) then
+  Width := cairo_get_line_width(C(Context).Cr);
+  if (DashArray = nil) or (Length <= 0) or (Width <= 0) then
   begin
     cairo_set_dash(C(Context).Cr, nil, 0, 0);
     Exit;
   end;
+  // The lengths are in stroke widths. Each dash gets the caps, half a width at each end; the preset styles
+  // (TStrokeDash.Dash, Dot, DashDot, DashDotDot) mean what is seen, so their dashes are shortened by the caps and
+  // their gaps lengthened; custom arrays are taken as they are (FMX's Direct2D and Skia canvases do the same).
+  Cap := 0;
+  if (Offset = 0) and (Matches([3, 1]) or Matches([1, 1]) or Matches([3, 1, 1, 1]) or
+    Matches([3, 1, 1, 1, 1, 1])) then
+    Cap := Width;
   SetLength(Dashes, Length);
-  Values := DashArray;
-  Width := cairo_get_line_width(C(Context).Cr);
   for I := 0 to Length - 1 do
-  begin
-    Dashes[I] := Max(0.0001, Values^ * Width);
-    Inc(Values);
-  end;
+    if Odd(I) then
+      Dashes[I] := Max(0, Value(I) * Width + Cap)
+    else
+      // Not zero: cairo leaves out some dashes of length 0 (their caps make dots); all zero would be an error.
+      Dashes[I] := Max(Width / 100, Value(I) * Width - Cap);
   cairo_set_dash(C(Context).Cr, @Dashes[0], Length, Offset * Width);
 end;
 
 procedure CairoDrawBitmap(Context, Bitmap: Pointer; Src, Dst: TRectF; Opacity: Single; HighSpeed: Boolean); cdecl;
 var
-  Surface: Pointer;
+  B: PFmuxBitmap;
+  Surface, Sub, Pattern: Pointer;
+  SX, SY, SR, SB: Integer;
 begin
-  if (Context = nil) or (Bitmap = nil) or (Src.Width <= 0) or (Src.Height <= 0) or (Dst.Width <= 0) or
-    (Dst.Height <= 0) then
+  if (Context = nil) or not BitmapUsable(Bitmap) or (Src.Width <= 0) or (Src.Height <= 0) or (Dst.Width <= 0) or
+    (Dst.Height <= 0) or C(Context).Degenerate or (Opacity <= 0) then
     Exit;
+  B := Bitmap;
+  // The source rectangle as a surface of its own, extended with its edge pixels: filtering must not blend in the
+  // pixels around it (FMX's styles draw parts of one bitmap), nor transparency at the edges of the destination.
+  SX := EnsureRange(Floor(Src.Left), 0, B.Width - 1);
+  SY := EnsureRange(Floor(Src.Top), 0, B.Height - 1);
+  SR := EnsureRange(Ceil(Src.Right), SX + 1, B.Width);
+  SB := EnsureRange(Ceil(Src.Bottom), SY + 1, B.Height);
   Surface := BitmapSurface(Bitmap);
+  Sub := cairo_surface_create_for_rectangle(Surface, SX, SY, SR - SX, SB - SY);
   cairo_save(C(Context).Cr);
   try
     IntersectClip(Context, Dst);
     cairo_translate(C(Context).Cr, Dst.Left, Dst.Top);
     cairo_scale(C(Context).Cr, Dst.Width / Src.Width, Dst.Height / Src.Height);
-    cairo_set_source_surface(C(Context).Cr, Surface, -Src.Left, -Src.Top);
+    cairo_set_source_surface(C(Context).Cr, Sub, SX - Src.Left, SY - Src.Top);
+    Pattern := cairo_get_source(C(Context).Cr);
+    cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_PAD);
     if HighSpeed then
-      cairo_pattern_set_filter(cairo_get_source(C(Context).Cr), CAIRO_FILTER_NEAREST)
+      cairo_pattern_set_filter(Pattern, CAIRO_FILTER_NEAREST)
     else
-      cairo_pattern_set_filter(cairo_get_source(C(Context).Cr), CAIRO_FILTER_BILINEAR);
-    cairo_paint_with_alpha(C(Context).Cr, EnsureRange(Opacity, 0, 1));
+      cairo_pattern_set_filter(Pattern, CAIRO_FILTER_GOOD);
+    if Opacity >= 1 then
+      cairo_paint(C(Context).Cr)
+    else
+      cairo_paint_with_alpha(C(Context).Cr, Opacity);
   finally
     cairo_restore(C(Context).Cr);
+    cairo_surface_destroy(Sub);
     cairo_surface_destroy(Surface);
   end;
 end;
@@ -544,49 +695,90 @@ end;
 
 procedure TCairoText.SetText(const Value: string);
 var
-  I, Offset, Bytes: Integer;
+  I, N, Len: Integer;
+  Code: Cardinal;
+  P: PByte;
 begin
+  // UTF-16 -> UTF-8 here (not by the RTL) so that the offsets match the bytes exactly: a lone surrogate (invalid in
+  // UTF-8, Pango would reject the text) and NUL (Pango ends the text there) become U+FFFD.
   Text := Value;
-  Utf8 := UTF8String(Text);
-  SetLength(ByteOffsets, Length(Text) + 1);
-  Offset := 0;
-  I := 0;
-  while I < Length(Text) do
+  Len := System.Length(Value);
+  SetLength(ByteOffsets, Len + 1);
+  SetLength(Utf8, Len * 3);
+  P := PByte(PAnsiChar(Utf8));
+  N := 0;
+  I := 1;
+  while I <= Len do
   begin
-    ByteOffsets[I] := Offset;
-    if (Ord(Text[I + 1]) >= $D800) and (Ord(Text[I + 1]) <= $DBFF) and (I + 1 < Length(Text)) and
-      (Ord(Text[I + 2]) >= $DC00) and (Ord(Text[I + 2]) <= $DFFF) then
+    ByteOffsets[I - 1] := N;
+    Code := Ord(Value[I]);
+    if (Code >= $D800) and (Code <= $DBFF) and (I < Len) and (Ord(Value[I + 1]) >= $DC00) and
+      (Ord(Value[I + 1]) <= $DFFF) then
     begin
+      Code := $10000 + ((Code - $D800) shl 10) + (Cardinal(Ord(Value[I + 1])) - $DC00);
+      ByteOffsets[I] := N;
       Inc(I);
-      ByteOffsets[I] := Offset;
-      Bytes := 4;
     end
-    else if Ord(Text[I + 1]) < $80 then
-      Bytes := 1
-    else if Ord(Text[I + 1]) < $800 then
-      Bytes := 2
+    else if ((Code >= $D800) and (Code <= $DFFF)) or (Code = 0) then
+      Code := $FFFD;
+    if Code < $80 then
+    begin
+      P[N] := Byte(Code);
+      Inc(N);
+    end
+    else if Code < $800 then
+    begin
+      P[N] := Byte($C0 or (Code shr 6));
+      P[N + 1] := Byte($80 or (Code and $3F));
+      Inc(N, 2);
+    end
+    else if Code < $10000 then
+    begin
+      P[N] := Byte($E0 or (Code shr 12));
+      P[N + 1] := Byte($80 or ((Code shr 6) and $3F));
+      P[N + 2] := Byte($80 or (Code and $3F));
+      Inc(N, 3);
+    end
     else
-      Bytes := 3;
-    Inc(Offset, Bytes);
+    begin
+      P[N] := Byte($F0 or (Code shr 18));
+      P[N + 1] := Byte($80 or ((Code shr 12) and $3F));
+      P[N + 2] := Byte($80 or ((Code shr 6) and $3F));
+      P[N + 3] := Byte($80 or (Code and $3F));
+      Inc(N, 4);
+    end;
     Inc(I);
   end;
-  ByteOffsets[Length(Text)] := Length(Utf8);
+  ByteOffsets[Len] := N;
+  SetLength(Utf8, N);
 end;
 
 function TCairoText.ByteIndex(Index: Integer): Integer;
 begin
-  Result := ByteOffsets[EnsureRange(Index, 0, Length(Text))];
+  Result := ByteOffsets[EnsureRange(Index, 0, System.Length(Text))];
 end;
 
 function TCairoText.CharIndex(Index, Trailing: Integer): Integer;
+var
+  Lo, Hi, Mid: Integer;
 begin
-  Result := 0;
-  while (Result < Length(Text)) and (ByteOffsets[Result] < Index) do
-    Inc(Result);
-  while (Trailing > 0) and (Result < Length(Text)) do
+  // The first UTF-16 index at or after byte Index (binary search: the offsets ascend).
+  Lo := 0;
+  Hi := System.Length(Text);
+  while Lo < Hi do
+  begin
+    Mid := (Lo + Hi) div 2;
+    if ByteOffsets[Mid] < Index then
+      Lo := Mid + 1
+    else
+      Hi := Mid;
+  end;
+  Result := Lo;
+  // Pango's trailing counts characters: a surrogate pair is one.
+  while (Trailing > 0) and (Result < System.Length(Text)) do
   begin
     Inc(Result);
-    if (Result < Length(Text)) and (ByteOffsets[Result] = ByteOffsets[Result - 1]) then
+    if (Result < System.Length(Text)) and (ByteOffsets[Result] = ByteOffsets[Result - 1]) then
       Inc(Result);
     Dec(Trailing);
   end;
@@ -601,7 +793,7 @@ const
   Alignments: array[0..2] of Integer = (PANGO_ALIGN_CENTER, PANGO_ALIGN_LEFT, PANGO_ALIGN_RIGHT);
 var
   T: TCairoText;
-  Surface, Cr, Desc, Attrs: Pointer;
+  Surface, Cr, Desc, Attrs, Options: Pointer;
   Family: UTF8String;
 begin
   LoadGraphicsLibraries;
@@ -612,6 +804,16 @@ begin
     try
       T.SetText(string(Text));
       T.Layout := pango_cairo_create_layout(Cr);
+      // Grayscale antialiasing: subpixel (fontconfig's rgba) leaves colored fringes on transparent bitmaps, and a
+      // Wayland client does not know the subpixel order of where its pixels end up.
+      Options := cairo_font_options_create;
+      try
+        cairo_font_options_set_antialias(Options, CAIRO_ANTIALIAS_GRAY);
+        pango_cairo_context_set_font_options(pango_layout_get_context(T.Layout), Options);
+      finally
+        cairo_font_options_destroy(Options);
+      end;
+      pango_layout_context_changed(T.Layout);
       Desc := pango_font_description_new;
       try
         Family := UTF8String(string(Font.Family));
@@ -628,7 +830,7 @@ begin
       finally
         pango_font_description_free(Desc);
       end;
-      pango_layout_set_text(T.Layout, PAnsiChar(T.Utf8), Length(T.Utf8));
+      pango_layout_set_text(T.Layout, PAnsiChar(T.Utf8), System.Length(T.Utf8));
       if WordWrap or (Trimming <> 0) then
       begin
         pango_layout_set_width(T.Layout, Round(Min(Max(0, Width) * PANGO_SCALE, MaxInt)));
@@ -673,7 +875,7 @@ end;
 
 procedure DrawText(Context, Layout: Pointer; X, Y: Single); cdecl;
 begin
-  if Layout = nil then
+  if (Layout = nil) or C(Context).Degenerate then
     Exit;
   cairo_move_to(C(Context).Cr, X, Y);
   pango_cairo_show_layout(C(Context).Cr, TCairoText(Layout).Layout);
@@ -714,7 +916,7 @@ begin
   if (Layout = nil) or (Region = nil) or (Pos < 0) then
     Exit;
   T := TCairoText(Layout);
-  Count := Max(0, Min(Count, Length(T.Text) - Pos));
+  Count := Max(0, Min(Count, System.Length(T.Text) - Pos));
   for I := 0 to Count - 1 do
   begin
     pango_layout_index_to_pos(T.Layout, T.ByteIndex(Pos + I), @R);
@@ -874,6 +1076,8 @@ begin
   if FormatName = 'jpg' then
     FormatName := 'jpeg';
   Pixbuf := gdk_pixbuf_new(GDK_COLORSPACE_RGB, 1, 8, W, H);
+  if Pixbuf = nil then
+    Exit;
   Buffer := nil;
   Err := nil;
   try
@@ -989,8 +1193,8 @@ begin
   FMUX.Api.FmuxLayoutToPath := TextToPath;
   FMUX.Api.FmuxBitmapLoad := BitmapLoad;
   FMUX.Api.FmuxBitmapSave := BitmapSave;
-  FMUX.Api.FmuxGetFontCount := GetFontCount;
-  FMUX.Api.FmuxGetFontName := GetFontName;
+  FMUX.Api.FmuxGetFontCount := GetFontCount; // partial: the system's font families
+  FMUX.Api.FmuxGetFontName := GetFontName; // partial: names of FmuxGetFontCount (custom fonts: not yet)
 end;
 
 end.
