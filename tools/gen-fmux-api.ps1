@@ -65,8 +65,8 @@ if ($pointers.Count -lt 100) { throw "Found only $($pointers.Count) function poi
 $fmuxUnit = Join-Path $Root 'src\FMXWayland.Fmux.pas'
 $implemented = @{}
 if (Test-Path $fmuxUnit) {
-  foreach ($m in [regex]::Matches([IO.File]::ReadAllText($fmuxUnit), '(?m)^\s*FMUX\.Api\.(\w+)\s*:=')) {
-    $implemented[$m.Groups[1].Value] = $true
+  foreach ($m in [regex]::Matches([IO.File]::ReadAllText($fmuxUnit), '(?m)^\s*FMUX\.Api\.(\w+)\s*:=[^;]*;[ \t]*(?://[ \t]*partial:[ \t]*(?<note>[^\r\n]*))?')) {
+    $implemented[$m.Groups[1].Value] = if ($m.Groups['note'].Success) { 'partial: ' + $m.Groups['note'].Value.Trim() } else { 'implemented' }
   }
 }
 $unknown = @($implemented.Keys | Where-Object { $n = $_; -not ($pointers | Where-Object { $_.Name -eq $n }) })
@@ -133,7 +133,7 @@ if ($StatusFile) {
   $st = New-Object Text.StringBuilder
   [void]$st.Append("| Function | FMXWayland |`n|---|---|`n")
   foreach ($p in $pointers) {
-    $s = if ($implemented.ContainsKey($p.Name)) { 'implemented' } else { 'stub' }
+    $s = if ($implemented.ContainsKey($p.Name)) { $implemented[$p.Name] } else { 'stub' }
     [void]$st.Append("| $($p.Name) | $s |`n")
   }
   [IO.File]::WriteAllText($StatusFile, $st.ToString(), (New-Object Text.UTF8Encoding $false))
