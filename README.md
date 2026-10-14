@@ -606,7 +606,24 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
   whenever its activation changes (FMX.Platform.Linux, as with libfmux).
 - FMX frees a form's controls after its window handle: a form freed while a combo box's drop-down is open (closed by
   code, not by the user, whose close goes through FMX's popup handling first) ends in an access violation in FMX
-  (`TCustomForm.DoRemoveObject` asks the gone window for its client size). Close the drop-down first.
+  (`TCustomForm.DoRemoveObject` asks the gone window for its client size; on Windows the same program hangs at
+  exit, so it is FMX's, not FMXWayland's to fix). Close the drop-downs of a form before freeing it from code, e.g.:
+
+  ```pascal
+  procedure CloseDropDowns(const ARoot: TFmxObject); // uses FMX.ListBox, FMX.ComboEdit
+  var
+    I: Integer;
+  begin
+    if (ARoot is TCustomComboBox) and TCustomComboBox(ARoot).DroppedDown then
+      TCustomComboBox(ARoot).DropDown // toggles: closes the open list
+    else if (ARoot is TCustomComboEdit) and TCustomComboEdit(ARoot).DroppedDown then
+      TCustomComboEdit(ARoot).CloseDropDown;
+    for I := 0 to ARoot.ChildrenCount - 1 do
+      CloseDropDowns(ARoot.Children[I]);
+  end;
+  ```
+
+  FMR Ribbon does this for its forms (`FmrCloseDropDowns` in `FMR.Ribbon.Editors`).
 
 ## Next steps
 

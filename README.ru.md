@@ -73,4 +73,7 @@ glibc 2.35 или новее);
 буфером FMX в 1024 символа. Подробный статус всех функций FMUX —
 в [docs/FMUX-STATUS.md](docs/FMUX-STATUS.md), планы — в README.md («Next steps»).
 
+**Ошибка FMX:** форма, освобождённая из кода при открытом выпадающем списке `TComboBox`/`TComboEdit`, падает в
+`TCustomForm.DoRemoveObject` (на Windows та же программа зависает при выходе — это ошибка FMX, не FMXWayland). выпадающие списки формы перед её освобождением: пример `CloseDropDowns` — в README.md (`What does not yet`), в FMR Ribbon — `FmrCloseDropDowns`.
+
 Лицензия MIT.
