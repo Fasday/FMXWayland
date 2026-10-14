@@ -1,0 +1,35 @@
+# Generated at build time from the local Delphi installation (Embarcadero's interface section): never commit
+FMUX.Api.pas
+
+# Build output (tools\build.ps1 puts it on D:\Work\FMXWayland-build by default)
+bin/
+dcu/
+out/
+*.res
+
+# Delphi compiler / IDE artifacts
+*.dcu
+*.o
+*.exe
+*.dll
+*.so
+*.map
+*.drc
+*.rsm
+*.identcache
+*.local
+*.dsk
+*.stat
+*.dproj.local
+__history/
+__recovery/
+*.~*
+
+# Screenshots and frame dumps of test runs (only the ones in docs/ are committed)
+shots/
+
+# OS / editors
+Thumbs.db
+desktop.ini
+.vs/
+.vscode/
