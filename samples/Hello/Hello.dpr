@@ -9,7 +9,12 @@ program Hello;
   Command line:
     --quit-after=N   closes the main form after N seconds (tests: clean exit)
     --verbose        writes the events it gets to stdout
-    --selftest       runs the self-test steps (tests\weston-headless.ps1) }
+    --selftest       runs the self-test steps (tests\weston-headless.ps1)
+    --early-popup[=paint|create]
+                     opens the combo box drop-down before the window's first configure (a timer of 1 ms), while it
+                     paints its first frame, or in FormCreate before it is shown (tests: popups of unmapped parents)
+    --own-titlebar   instead of the main form, a form that draws its own title bar through FMXWayland's
+                     IFMXWaylandWindowFrame service (HelloTitleBar.pas; with --selftest its own steps) }
 
 uses
   System.StartUpCopy,
@@ -18,13 +23,20 @@ uses
 {$IFNDEF NOSKIA}
   FMX.Skia,
 {$ENDIF}
-  HelloMain in 'HelloMain.pas' {HelloForm};
+  HelloMain in 'HelloMain.pas' {HelloForm},
+  HelloTitleBar in 'HelloTitleBar.pas';
+
+var
+  TitleBarForm: TTitleBarForm;
 
 begin
 {$IFNDEF NOSKIA}
   GlobalUseSkia := True;
 {$ENDIF}
   Application.Initialize;
-  Application.CreateForm(THelloForm, HelloForm);
+  if OwnTitleBarRequested then
+    Application.CreateForm(TTitleBarForm, TitleBarForm)
+  else
+    Application.CreateForm(THelloForm, HelloForm);
   Application.Run;
 end.

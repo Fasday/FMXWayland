@@ -63,6 +63,7 @@
             <Form>HelloForm</Form>
             <FormType>fmx</FormType>
         </DCCReference>
+        <DCCReference Include="HelloTitleBar.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

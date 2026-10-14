@@ -197,6 +197,22 @@ type
     // The compositor switched the decorations (xdg-decoration) since the last configure: FMX's window rectangle
     // (with the decorations) changes even when the size stays.
     FDecoSwitched: Boolean;
+    // Decorations the program wants (SetDecorated): False = none at all, neither the client-side ones nor the
+    // compositor's; kept across configures, decoration mode changes and hide/show.
+    FDecorated: Boolean;
+    // The mode the compositor gave with xdg-decoration (0 until it answers).
+    FDecoMode: UInt32;
+    // The states of the last configure as bits (1 shl xdg_toplevel.state), those of the configure being received,
+    // and the window manager's capabilities as bits (1 shl xdg_toplevel.wm_capabilities; $FFFFFFFF until it sends
+    // them); FCapabilitiesChanged: new capabilities, reported with the configure that follows them.
+    FStateBits: Cardinal;
+    FPendingStateBits: Cardinal;
+    FCapabilityBits: Cardinal;
+    FCapabilitiesChanged: Boolean;
+    // A popup shown while its parent was not mapped yet: its xdg_popup is made when the parent is (xdg-shell: "the
+    // parent of an xdg_popup must be mapped before the xdg_popup itself").
+    FPopupPending: Boolean;
+    FPendingOffset: TPointF;
     procedure CreateToplevelRole;
     function DecoButtonAt(const AIndex: Integer): TWlDecoPart;
     function DecoButtonCount: Integer;
@@ -212,6 +228,9 @@ type
     procedure CreatePopupRole;
     procedure DestroyRole;
     procedure HideChildPopups;
+    function CanParentPopups: Boolean;
+    procedure ParentMapped;
+    function HeldPress(out ASerial: UInt32): Boolean;
     function AcquireBuffer(const AWidth, AHeight: Integer): TWlBuffer;
     procedure UpdateScale;
     procedure HandleXdgConfigure(const ASerial: UInt32);
@@ -241,6 +260,9 @@ type
     procedure DoKey(const AEvent: TWlKeyEvent; const AKey: Word; const AChar: Char; const AState: Integer); virtual;
     /// <summary>The window's scale changed.</summary>
     procedure DoScaleChanged; virtual;
+    /// <summary>A configure changed the xdg_toplevel states (StateBits) or brought new capabilities of the window
+    /// manager (CapabilityBits).</summary>
+    procedure DoFrameChanged; virtual;
     /// <summary>Draws the title of client-side decorations into ARect (buffer pixels) of AFrame (premultiplied BGRA);
     /// the core has no text renderer, the FMX layer draws it with an FMX bitmap (of the canvas FMX uses).</summary>
     procedure DoDrawTitle(const AFrame: PWlFrame; const ARect: TRect; const ATitle: string; const AActive: Boolean);
@@ -282,6 +304,29 @@ type
     /// <summary>Decides whether a toplevel draws its own decorations (call after setting Borderless, before the
     /// first SetBounds): when the compositor has no xdg-decoration and FMXWAYLAND_CSD is not 0.</summary>
     procedure PrepareDecorations;
+    /// <summary>False: no decorations for the toplevel, neither its own client-side ones nor the compositor's
+    /// (xdg-decoration mode client_side); the surface is all client area and the window geometry. True (default):
+    /// the platform's choice again. Kept until changed. A window on the screen keeps its outer size (the client area
+    /// takes or gives back the room of the decorations), one not configured yet keeps its client size; DoResized
+    /// reports the change.</summary>
+    procedure SetDecorated(const AValue: Boolean);
+    /// <summary>True when the toplevel has decorations now: its own (Csd) or the compositor's (xdg-decoration
+    /// server_side, asked or given).</summary>
+    function HasDecorations: Boolean;
+    /// <summary>xdg_toplevel.move with the serial of the latest pointer button press on the window (its content or
+    /// its decorations), while that press is held; False without one or for popups.</summary>
+    function BeginMove: Boolean;
+    /// <summary>xdg_toplevel.resize (AEdges: an xdg_toplevel.resize_edge value other than none) with the serial of
+    /// the latest press held on the window; False without one, for popups or invalid edges.</summary>
+    function BeginResize(const AEdges: Cardinal): Boolean;
+    /// <summary>xdg_toplevel.show_window_menu at (AX, AY) in surface coordinates with the serial of the latest press
+    /// held on the window; False without one, for popups or without the window_menu capability.</summary>
+    function ShowWindowMenu(const AX, AY: Integer): Boolean;
+    /// <summary>xdg_toplevel.set_minimized (where the window manager can minimize); the state becomes Minimized
+    /// (DoStateChanged), as Wayland does not tell.</summary>
+    procedure Minimize;
+    /// <summary>xdg_toplevel.set_maximized or unset_maximized; the state follows with the configure.</summary>
+    procedure SetMaximized(const AValue: Boolean);
     property Display: TWlDisplay read FDisplay;
     /// <summary>The window draws its own decorations (the compositor offers no server-side ones).</summary>
     property Csd: Boolean read FCsd;
@@ -305,6 +350,14 @@ type
     property Activated: Boolean read FActivated;
     property Title: string read FTitle;
     property Borderless: Boolean read FBorderless write FBorderless;
+    /// <summary>What SetDecorated set (True by default).</summary>
+    property Decorated: Boolean read FDecorated;
+    /// <summary>The xdg_toplevel states of the last configure, as bits 1 shl state (maximized 1, fullscreen 2,
+    /// resizing 3, activated 4, tiled_left..tiled_bottom 5..8, suspended 9).</summary>
+    property StateBits: Cardinal read FStateBits;
+    /// <summary>The window manager's capabilities (xdg_toplevel.wm_capabilities) as bits 1 shl capability
+    /// (window_menu 1, maximize 2, fullscreen 3, minimize 4); $FFFFFFFF when it never sent them.</summary>
+    property CapabilityBits: Cardinal read FCapabilityBits;
     /// <summary>Someone else (a GPU canvas through Vulkan WSI) presents to the surface: no wl_shm frames.</summary>
     property ExternalPresentation: Boolean read FExternalPresentation write FExternalPresentation;
   end;
@@ -379,6 +432,11 @@ type
     FLastClickButton: Integer;
     FLastClickPos: TPointF;
     FLastClickWindow: TWlWindow;
+    // The latest button press on any surface of a window (content or decorations) while buttons are held: what
+    // xdg_toplevel.move/resize/show_window_menu need.
+    FPressSerial: UInt32;
+    FPressWindow: TWlWindow;
+    FPressButtons: Integer;
     FCursor: Integer;
     FCursorTheme: Pwl_cursor_theme;
     FCursorThemeScale: Integer;
@@ -702,11 +760,14 @@ begin
   W.FPendingMaximized := False;
   W.FPendingFullScreen := False;
   W.FPendingActivated := False;
+  W.FPendingStateBits := 0;
   if (AStates <> nil) and (AStates.data <> nil) then
   begin
     P := AStates.data;
     for I := 0 to Integer(AStates.size div SizeOf(Cardinal)) - 1 do
     begin
+      if P^ < 32 then
+        W.FPendingStateBits := W.FPendingStateBits or (Cardinal(1) shl P^);
       case P^ of
         XDG_TOPLEVEL_STATE_MAXIMIZED:
           W.FPendingMaximized := True;
@@ -740,12 +801,15 @@ begin
   W.FCanMaximize := False;
   W.FCanMinimize := False;
   W.FCanWindowMenu := False;
+  W.FCapabilityBits := 0;
   S := '';
   if (ACapabilities <> nil) and (ACapabilities.data <> nil) then
   begin
     P := ACapabilities.data;
     for I := 0 to Integer(ACapabilities.size div SizeOf(Cardinal)) - 1 do
     begin
+      if P^ < 32 then
+        W.FCapabilityBits := W.FCapabilityBits or (Cardinal(1) shl P^);
       case P^ of
         XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU:
           begin
@@ -771,6 +835,7 @@ begin
   WlLog(TWlLogLevel.Debug, 'wm capabilities of "%s":%s', [W.FTitle, S]);
   // The title bar buttons follow (it takes effect with the configure that comes next).
   W.FDecoDirty := True;
+  W.FCapabilitiesChanged := True;
 end;
 
 const
@@ -806,6 +871,7 @@ end;
 
 procedure PopupDone(AData: Pointer; AXdgPopup: Pxdg_popup); cdecl;
 begin
+  WlLog(TWlLogLevel.Debug, 'popup dismissed by the compositor', []);
   TWlWindow(AData).DoPopupDone;
 end;
 
@@ -825,8 +891,10 @@ var
 begin
   WlLog(TWlLogLevel.Debug, 'decoration mode %d of "%s"', [AMode, TWlWindow(AData).FTitle]);
   W := TWlWindow(AData);
+  W.FDecoMode := AMode;
   WasCsd := W.FCsd;
-  // The compositor wants the client to decorate (it may say so even though it offers the protocol).
+  // The compositor wants the client to decorate (it may say so even though it offers the protocol); not a window
+  // the program decorates itself (SetDecorated(False): EnableCsd refuses).
   if (AMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) and not W.FBorderless then
     W.EnableCsd
   else if AMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE then
@@ -934,20 +1002,35 @@ begin
 end;
 
 procedure PointerLeave(AData: Pointer; AWlPointer: Pwl_pointer; ASerial: UInt32; ASurface: Pwl_surface); cdecl;
+const
+  CButtonBits: array[0..2] of Integer = (WL_STATE_LEFT, WL_STATE_RIGHT, WL_STATE_MIDDLE);
 var
   D: TWlDisplay;
   W: TWlWindow;
+  Held, Bit: Integer;
 begin
   D := TWlDisplay(AData);
   W := D.FPointerWindow;
+  Held := D.FButtons;
   D.FPointerWindow := nil;
   D.FButtons := 0;
+  // A press the compositor took over (an interactive move or resize, its window menu) ends here for the window.
+  D.FPressButtons := 0;
+  D.FPressWindow := nil;
   if W = nil then
     Exit;
   if D.FPointerOnDeco then
     W.DecoPointer(TWlPointerEvent.Leave, -1, -1, 0, ASerial)
   else
-    W.DoPointer(TWlPointerEvent.Leave, D.FPointerPos.X, D.FPointerPos.Y, D.FModState, 0);
+  begin
+    // Buttons still held: the release will not come to this surface. FMX gets it now, so the control that took the
+    // press (and the mouse capture) lets it go.
+    for Bit in CButtonBits do
+      if (Held and Bit <> 0) and D.FWindows.Contains(W) then
+        W.DoPointer(TWlPointerEvent.Up, D.FPointerPos.X, D.FPointerPos.Y, D.FModState or Bit, 0);
+    if D.FWindows.Contains(W) then
+      W.DoPointer(TWlPointerEvent.Leave, D.FPointerPos.X, D.FPointerPos.Y, D.FModState, 0);
+  end;
   D.FPointerOnDeco := False;
 end;
 
@@ -985,6 +1068,19 @@ begin
   end;
   W := D.FPointerWindow;
   D.FLastInputSerial := ASerial;
+  // Before the window hears of it: a press handler may start a move (IFMXWaylandWindowFrame.BeginMove) with it.
+  if AState = WL_POINTER_BUTTON_STATE_PRESSED then
+  begin
+    D.FPressButtons := D.FPressButtons or Bit;
+    D.FPressSerial := ASerial;
+    D.FPressWindow := W;
+  end
+  else
+  begin
+    D.FPressButtons := D.FPressButtons and not Bit;
+    if D.FPressButtons = 0 then
+      D.FPressWindow := nil;
+  end;
   if WlLogEnabled(TWlLogLevel.Trace) then
     WlLog(TWlLogLevel.Trace, 'button %x state %d time %u at %.1f,%.1f (last press %u)', [AButton, AState, ATime,
       D.FPointerPos.X, D.FPointerPos.Y, D.FLastClickTime]);
@@ -1379,6 +1475,8 @@ begin
   FCanMaximize := True;
   FCanMinimize := True;
   FCanWindowMenu := True;
+  FCapabilityBits := $FFFFFFFF;
+  FDecorated := True;
   FSurface := wl_compositor_create_surface(ADisplay.FCompositor);
   // The listener's data is the proxy's user data: WindowFromSurface finds the window through it.
   wl_surface_add_listener(FSurface, @CSurfaceListener, Self);
@@ -1468,6 +1566,10 @@ procedure TWlWindow.DoStateChanged(const AState: TWlWindowState);
 begin
 end;
 
+procedure TWlWindow.DoFrameChanged;
+begin
+end;
+
 function TWlWindow.GetBufferWidth: Integer;
 begin
   Result := Max(1, Round(FWidth * FScale));
@@ -1529,7 +1631,7 @@ begin
   begin
     FDecoration := zxdg_decoration_manager_v1_get_toplevel_decoration(FDisplay.FDecorationManager, FToplevel);
     zxdg_toplevel_decoration_v1_add_listener(FDecoration, @CDecorationListener, Self);
-    if FBorderless then
+    if FBorderless or not FDecorated then
       zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)
     else
       zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
@@ -1563,14 +1665,14 @@ end;
 
 procedure TWlWindow.PrepareDecorations;
 begin
-  if (FKind = TWlWindowKind.Toplevel) and not FBorderless and (FDisplay.FDecorationManager = nil) and
+  if (FKind = TWlWindowKind.Toplevel) and not FBorderless and FDecorated and (FDisplay.FDecorationManager = nil) and
     DecoEnvAllowed then
     EnableCsd;
 end;
 
 procedure TWlWindow.EnableCsd;
 begin
-  if FCsd or (FDisplay.FSubcompositor = nil) or not DecoEnvAllowed then
+  if FCsd or not FDecorated or (FDisplay.FSubcompositor = nil) or not DecoEnvAllowed then
     Exit;
   FDecoSurface := wl_compositor_create_surface(FDisplay.FCompositor);
   wl_surface_add_listener(FDecoSurface, @CDecoSurfaceListener, Self);
@@ -1611,6 +1713,158 @@ end;
 function TWlWindow.DecorationInsets: TRect;
 begin
   Result := InsetsFor(FState, FFullScreen);
+end;
+
+procedure TWlWindow.SetDecorated(const AValue: Boolean);
+var
+  Old, New, OldNormal, NewNormal: TRect;
+  KeepOuter: Boolean;
+begin
+  if (FKind <> TWlWindowKind.Toplevel) or (AValue = FDecorated) then
+    Exit;
+  Old := DecorationInsets;
+  OldNormal := InsetsFor(TWlWindowState.Normal, False);
+  FDecorated := AValue;
+  if AValue then
+  begin
+    // The platform's choice again: the compositor's decorations where it offers them (it may answer client-side:
+    // DecorationConfigure enables the window's own then), else the window's own.
+    if FDecoration <> nil then
+    begin
+      if FBorderless then
+        zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)
+      else
+        zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    end
+    else if not FBorderless and DecoEnvAllowed and ((FDisplay.FDecorationManager = nil) or
+      (FDecoMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)) then
+      EnableCsd;
+  end
+  else
+  begin
+    DisableCsd;
+    if FDecoration <> nil then
+      zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    // The window geometry is the surface from now on (also where it was never set: server-side decorations).
+    FGeometryW := -1;
+  end;
+  WlLog(TWlLogLevel.Debug, 'decorations of "%s": %s (own title bar %s)', [FTitle, BoolToStr(AValue, True),
+    BoolToStr(FCsd, True)]);
+  New := DecorationInsets;
+  NewNormal := InsetsFor(TWlWindowState.Normal, False);
+  if Old <> New then
+  begin
+    // On the screen the window keeps its outer size and place (as when the compositor switches the decoration
+    // mode; a maximized window must keep the configured size): the client area takes or gives back the room of
+    // the decorations. Before that the client area keeps the size the program gave it.
+    KeepOuter := FConfigured;
+    if KeepOuter then
+    begin
+      FOrigin := PointF(FOrigin.X + New.Left - Old.Left, FOrigin.Y + New.Top - Old.Top);
+      FWidth := Max(1, FWidth + Old.Left + Old.Right - New.Left - New.Right);
+      FHeight := Max(1, FHeight + Old.Top + Old.Bottom - New.Top - New.Bottom);
+    end;
+    if (FNormalWidth > 0) and KeepOuter then
+    begin
+      FNormalWidth := Max(1, FNormalWidth + OldNormal.Left + OldNormal.Right - NewNormal.Left - NewNormal.Right);
+      FNormalHeight := Max(1, FNormalHeight + OldNormal.Top + OldNormal.Bottom - NewNormal.Top - NewNormal.Bottom);
+    end;
+    FFullDamage := True;
+    InvalidateAll;
+  end;
+  if (FToplevel <> nil) and ((FMinWidth > 0) or (FMinHeight > 0)) then
+    SetMinSize(FMinWidth, FMinHeight);
+  FDisplay.Flush;
+  // FMX's window rectangle (with the decorations) and maybe its client size changed.
+  DoResized;
+end;
+
+function TWlWindow.HasDecorations: Boolean;
+begin
+  if FKind <> TWlWindowKind.Toplevel then
+    Exit(False);
+  if FCsd then
+    Exit(True);
+  // The compositor's: asked for (server_side) and not refused.
+  Result := FDecorated and not FBorderless and (FDisplay.FDecorationManager <> nil) and
+    (FDecoMode <> ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+end;
+
+function TWlWindow.HeldPress(out ASerial: UInt32): Boolean;
+begin
+  ASerial := FDisplay.FPressSerial;
+  Result := (FDisplay.FSeat <> nil) and (FDisplay.FPressWindow = Self) and (FDisplay.FPressButtons <> 0);
+end;
+
+function TWlWindow.BeginMove: Boolean;
+var
+  Serial: UInt32;
+begin
+  Result := (FToplevel <> nil) and FVisible and HeldPress(Serial);
+  if Result then
+  begin
+    xdg_toplevel_move(FToplevel, FDisplay.FSeat, Serial);
+    FDisplay.Flush;
+  end;
+  WlLog(TWlLogLevel.Debug, 'move of "%s" asked: %s', [FTitle, BoolToStr(Result, True)]);
+end;
+
+function TWlWindow.BeginResize(const AEdges: Cardinal): Boolean;
+var
+  Serial: UInt32;
+begin
+  // Other values are a protocol error (invalid_resize_edge).
+  Result := (AEdges in [XDG_TOPLEVEL_RESIZE_EDGE_TOP, XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM, XDG_TOPLEVEL_RESIZE_EDGE_LEFT,
+    XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT, XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT, XDG_TOPLEVEL_RESIZE_EDGE_RIGHT,
+    XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT, XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT]) and (FToplevel <> nil) and
+    FVisible and HeldPress(Serial);
+  if Result then
+  begin
+    xdg_toplevel_resize(FToplevel, FDisplay.FSeat, Serial, AEdges);
+    FDisplay.Flush;
+  end;
+  WlLog(TWlLogLevel.Debug, 'resize (edges %d) of "%s" asked: %s', [AEdges, FTitle, BoolToStr(Result, True)]);
+end;
+
+function TWlWindow.ShowWindowMenu(const AX, AY: Integer): Boolean;
+var
+  Serial: UInt32;
+begin
+  Result := (FToplevel <> nil) and FVisible and FCanWindowMenu and HeldPress(Serial);
+  if Result then
+  begin
+    xdg_toplevel_show_window_menu(FToplevel, FDisplay.FSeat, Serial, AX, AY);
+    FDisplay.Flush;
+  end;
+  WlLog(TWlLogLevel.Debug, 'window menu of "%s" at %d,%d asked: %s', [FTitle, AX, AY, BoolToStr(Result, True)]);
+end;
+
+procedure TWlWindow.Minimize;
+begin
+  if (FToplevel = nil) or not FVisible or not FCanMinimize then
+    Exit;
+  xdg_toplevel_set_minimized(FToplevel);
+  FDisplay.Flush;
+  // Wayland does not tell about minimized windows: the state is the request's.
+  FState := TWlWindowState.Minimized;
+  DoStateChanged(FState);
+end;
+
+procedure TWlWindow.SetMaximized(const AValue: Boolean);
+begin
+  if (FToplevel = nil) or not FVisible then
+  begin
+    if AValue then
+      SetState(TWlWindowState.Maximized)
+    else
+      SetState(TWlWindowState.Normal);
+    Exit;
+  end;
+  if AValue then
+    xdg_toplevel_set_maximized(FToplevel)
+  else
+    xdg_toplevel_unset_maximized(FToplevel);
+  FDisplay.Flush;
 end;
 
 procedure TWlWindow.UpdateGeometry;
@@ -1982,11 +2236,7 @@ begin
       else
         xdg_toplevel_set_maximized(FToplevel);
     TWlDecoPart.Minimize:
-      begin
-        xdg_toplevel_set_minimized(FToplevel);
-        FState := TWlWindowState.Minimized;
-        DoStateChanged(FState);
-      end;
+      Minimize;
   end;
 end;
 
@@ -2086,10 +2336,21 @@ var
 begin
   if FVisible then
     Exit;
-  UsePopup := (FKind = TWlWindowKind.Popup) and (FParent <> nil) and FParent.FVisible and
-    (FParent.FXdgSurface <> nil);
+  UsePopup := (FKind = TWlWindowKind.Popup) and (FParent <> nil);
   if (FKind = TWlWindowKind.Popup) and not UsePopup then
-    WlLog(TWlLogLevel.Debug, 'popup without a visible parent: shown as a toplevel', []);
+    WlLog(TWlLogLevel.Debug, 'popup without a parent: shown as a toplevel', []);
+  if UsePopup and not FParent.CanParentPopups then
+  begin
+    // xdg-shell: the parent of an xdg_popup must be mapped before the popup (configured and its first frame
+    // committed). The popup waits for it (ParentMapped), at the same place relative to it.
+    WlLog(TWlLogLevel.Debug, 'popup waits until its parent "%s" is mapped', [FParent.FTitle]);
+    FPopupPending := True;
+    FPendingOffset := FOrigin - FParent.FOrigin;
+    FVisible := True;
+    FConfigured := False;
+    FMapped := False;
+    Exit;
+  end;
   if UsePopup then
     CreatePopupRole
   else
@@ -2131,8 +2392,35 @@ var
 begin
   Ws := FDisplay.FWindows.ToArray;
   for I := High(Ws) downto 0 do
-    if (Ws[I].FParent = Self) and Ws[I].FVisible and (Ws[I].FPopup <> nil) then
+    if (Ws[I].FParent = Self) and Ws[I].FVisible and ((Ws[I].FPopup <> nil) or Ws[I].FPopupPending) then
       Ws[I].Hide;
+end;
+
+function TWlWindow.CanParentPopups: Boolean;
+begin
+  // Mapped: configured and a frame committed (an external presenter commits its own frames once configured).
+  Result := FVisible and (FXdgSurface <> nil) and (FMapped or (FExternalPresentation and FConfigured));
+end;
+
+procedure TWlWindow.ParentMapped;
+var
+  W: TWlWindow;
+begin
+  for W in FDisplay.FWindows.ToArray do
+    if (W.FParent = Self) and W.FVisible and FDisplay.FWindows.Contains(W) then
+    begin
+      if W.FPopupPending then
+      begin
+        W.FPopupPending := False;
+        W.FVisible := False;
+        W.FOrigin := FOrigin + W.FPendingOffset;
+        WlLog(TWlLogLevel.Debug, 'parent "%s" mapped: the popup is made now', [FTitle]);
+        W.Show;
+      end
+      else if W.FToplevel <> nil then
+        // A parent that was not mapped counts as none (xdg_toplevel.set_parent): again now.
+        W.SetTransientParent;
+    end;
 end;
 
 procedure TWlWindow.Hide;
@@ -2140,6 +2428,13 @@ begin
   if not FVisible then
     Exit;
   HideChildPopups;
+  if FPopupPending then
+  begin
+    // Never made: nothing to unmap.
+    FPopupPending := False;
+    FVisible := False;
+    Exit;
+  end;
   FVisible := False;
   FConfigured := False;
   FMapped := False;
@@ -2164,7 +2459,7 @@ end;
 
 procedure TWlWindow.HandleXdgConfigure(const ASerial: UInt32);
 var
-  WasConfigured, SizeChanged, StateChanged, DecoSwitched: Boolean;
+  WasConfigured, SizeChanged, StateChanged, DecoSwitched, FrameChanged: Boolean;
   W, H: Integer;
   NewState: TWlWindowState;
   Ins: TRect;
@@ -2228,6 +2523,9 @@ begin
     else
       StateChanged := NewState <> FState;
     FState := NewState;
+    FrameChanged := (FPendingStateBits <> FStateBits) or FCapabilitiesChanged;
+    FStateBits := FPendingStateBits;
+    FCapabilitiesChanged := False;
     // The state first: FMX's OnResize of a maximized form sees wsMaximized.
     if StateChanged then
       DoStateChanged(FState);
@@ -2238,9 +2536,13 @@ begin
       FActivated := FPendingActivated;
       DoActivate(FActivated);
     end;
+    if FrameChanged then
+      DoFrameChanged;
   end;
   if not WasConfigured or SizeChanged then
     InvalidateAll;
+  if not WasConfigured and FExternalPresentation then
+    ParentMapped;
 end;
 
 function TWlWindow.NeedsPaint(const ANow: Int64): Boolean;
@@ -2358,8 +2660,12 @@ begin
   end;
   wl_surface_commit(FSurface);
   Buf.Busy := True;
-  FMapped := True;
   FFullDamage := False;
+  if not FMapped then
+  begin
+    FMapped := True;
+    ParentMapped;
+  end;
 end;
 
 procedure TWlWindow.Invalidate(const ARect: TRectF);
@@ -2994,6 +3300,8 @@ begin
     FLastInputWindow := nil;
   if FLastClickWindow = AWindow then
     FLastClickWindow := nil;
+  if FPressWindow = AWindow then
+    FPressWindow := nil;
 end;
 
 function TWlDisplay.PrimaryOutput: TWlOutput;
