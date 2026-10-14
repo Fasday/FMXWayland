@@ -612,6 +612,11 @@ begin
   if (F = nil) or (F.Handle = nil) then
     Exit;
   try
+    // As FMX's Windows platform does for WM_DPICHANGED: the form's canvas (and a TForm3D's context) is made again,
+    // since a canvas takes the window's scale when it is made. A new window often starts at the output's integer
+    // scale and gets the fractional one a moment later: FastCanvas, which sizes its frames by the buffer, drew them
+    // at the scale before (a form at 2 in a buffer of 1.5).
+    F.RecreateResources;
     TMessageManager.DefaultManager.SendMessage(nil, TScaleChangedMessage.Create(F));
   except
     Application.HandleException(F);
