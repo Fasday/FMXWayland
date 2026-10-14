@@ -29,8 +29,8 @@ implementation
 
 uses
   System.SysUtils, System.Types, System.Classes, System.UITypes, System.Math, System.Messaging,
-  System.Generics.Collections, FMX.Types, FMX.Graphics, FMX.Forms, FMX.Controls, FMX.Platform, FMX.Platform.Linux,
-  FMUX.Api,
+  System.Generics.Collections, FMX.Types, FMX.Graphics, FMX.Forms, FMX.Controls, FMX.Dialogs, FMX.DialogHelper,
+  FMX.Platform, FMX.Platform.Linux, FMUX.Api,
   FMXWayland.Log, FMXWayland.Platform, FMXWayland.Native;
 
 type
@@ -1154,6 +1154,45 @@ end;
 
 {$ENDREGION}
 
+{$REGION 'Dialogs'}
+
+const
+  CDialogButtonBits: array[TMsgDlgBtn] of Integer = (FMUX_BTN_Yes, FMUX_BTN_No, FMUX_BTN_OK, FMUX_BTN_Cancel,
+    FMUX_BTN_Abort, FMUX_BTN_Retry, FMUX_BTN_Ignore, FMUX_BTN_All, FMUX_BTN_NoToAll, FMUX_BTN_YesToAll,
+    FMUX_BTN_Help, FMUX_BTN_Close);
+
+function WlMessageDialog(AMessage: PChar; DlgType, Buttons: Integer): Integer; cdecl;
+var
+  Btns: TMsgDlgButtons;
+  B, Default: TMsgDlgBtn;
+  R: TModalResult;
+begin
+  // No native toolkit: FMX's own dialog form (FMX.DialogHelper, the one of its asynchronous dialogs), modal.
+  Btns := [];
+  for B := Low(TMsgDlgBtn) to High(TMsgDlgBtn) do
+    if Buttons and CDialogButtonBits[B] <> 0 then
+      Include(Btns, B);
+  if Btns = [] then
+    Btns := [TMsgDlgBtn.mbOK];
+  Default := TMsgDlgBtn.mbOK;
+  for B in [TMsgDlgBtn.mbOK, TMsgDlgBtn.mbYes, TMsgDlgBtn.mbRetry, TMsgDlgBtn.mbIgnore, TMsgDlgBtn.mbClose] do
+    if B in Btns then
+    begin
+      Default := B;
+      Break;
+    end;
+  R := mrNone;
+  TDialogHelper.MessageDialog(string(AMessage), TMsgDlgType(EnsureRange(DlgType, Ord(Low(TMsgDlgType)),
+    Ord(High(TMsgDlgType)))), Btns, Default, 0,
+    procedure(const AResult: TModalResult)
+    begin
+      R := AResult;
+    end, True);
+  Result := R;
+end;
+
+{$ENDREGION}
+
 {$REGION 'Input method'}
 
 procedure WlImeEnterControl(Wnd: Pointer; StartProc, ChangedProc, CommitProc: TFmuxImeCommitProc; Rect: TRect;
@@ -1240,6 +1279,8 @@ begin
   FMUX.Api.FmuxClipboardGetImage := WlClipboardGetImage; // partial: no images yet
   FMUX.Api.FmuxClipboardHasCustom := WlClipboardHasCustom; // partial: no custom formats yet (always False)
   FMUX.Api.FmuxClipboardGetCustom := WlClipboardGetCustom; // partial: no custom formats yet
+
+  FMUX.Api.FmuxMessageDialog := WlMessageDialog; // partial: FMX's own dialog form, not a native one
 
   FMUX.Api.FmuxImeEnterControl := WlImeEnterControl; // partial: no-op (text-input-v3 not used yet)
   FMUX.Api.FmuxImeExitControl := WlImeExitControl; // partial: no-op

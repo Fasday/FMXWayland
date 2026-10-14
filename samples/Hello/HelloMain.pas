@@ -57,8 +57,10 @@ type
     procedure ModalButtonClick(Sender: TObject);
     procedure MaximizeButtonClick(Sender: TObject);
     procedure ResizeButtonClick(Sender: TObject);
+    procedure MessageButtonClick(Sender: TObject);
     procedure AnimTimerTimer(Sender: TObject);
     procedure QuitTimerTimer(Sender: TObject);
+    procedure NativeTimerTimer(Sender: TObject);
     procedure FormResize(Sender: TObject);
   end;
 
@@ -70,7 +72,19 @@ implementation
 {$R *.fmx}
 
 uses
-  System.UIConsts, System.DateUtils, FMX.Platform;
+  System.UIConsts, System.DateUtils, FMX.Platform, FMX.DialogService.Sync;
+
+type
+  /// The contract of FMXWayland.Native.IFMXWaylandNativeWindow, declared here again (same GUID, same methods) the way
+  /// a library that does not depend on FMXWayland (FastCanvas) declares it.
+  IWaylandNativeWindowContract = interface
+    ['{B04A2FBC-1322-42BC-98A6-D526A7854F2C}']
+    function GetWaylandDisplay: Pointer;
+    function GetWaylandSurface(const AHandle: TWindowHandle): Pointer;
+    function GetBufferSize(const AHandle: TWindowHandle): TSize;
+    function GetScale(const AHandle: TWindowHandle): Single;
+    procedure SetExternalPresentation(const AHandle: TWindowHandle; const AValue: Boolean);
+  end;
 
 const
   CComboColors: array[0..4] of TAlphaColor = (TAlphaColors.Crimson, TAlphaColors.Seagreen, TAlphaColors.Royalblue,
@@ -205,6 +219,7 @@ begin
   FModalButton := AddButton(160, 390, 130, 'Modal form', ModalButtonClick);
   FMaximizeButton := AddButton(300, 390, 130, 'Maximize', MaximizeButtonClick);
   FResizeButton := AddButton(440, 390, 130, 'Resize 760x560', ResizeButtonClick);
+  AddButton(580, 390, 110, 'Message box', MessageButtonClick);
 
   with AddLabel(20, 440, 660, 'FMXWayland: FMX on Wayland without libfmux and GTK; Skia raster canvas, wl_shm.') do
     TextSettings.FontColor := TAlphaColors.Gray;
@@ -214,6 +229,13 @@ begin
   FAnimTimer.OnTimer := AnimTimerTimer;
   FAnimTimer.Enabled := True;
   FTickStart := Now;
+
+  with TTimer.Create(Self) do
+  begin
+    Interval := 1500;
+    OnTimer := NativeTimerTimer;
+    Enabled := True;
+  end;
 
   if QuitAfter > 0 then
   begin
@@ -421,6 +443,17 @@ begin
   Log('window state ' + IntToStr(Ord(WindowState)));
 end;
 
+procedure THelloForm.MessageButtonClick(Sender: TObject);
+var
+  R: Integer;
+begin
+  Log('message shown');
+  R := TDialogServiceSync.MessageDialog('Do you like FMX on Wayland?', TMsgDlgType.mtConfirmation,
+    [TMsgDlgBtn.mbYes, TMsgDlgBtn.mbNo], TMsgDlgBtn.mbYes, 0);
+  Log(Format('message result %d', [R]));
+  FClipLabel.Text := Format('Message result: %d', [R]);
+end;
+
 procedure THelloForm.ResizeButtonClick(Sender: TObject);
 begin
   ClientWidth := 760;
@@ -442,6 +475,22 @@ begin
     FTicks := 0;
     FTickStart := Now;
   end;
+end;
+
+procedure THelloForm.NativeTimerTimer(Sender: TObject);
+var
+  Svc: IWaylandNativeWindowContract;
+  Size: TSize;
+begin
+  (Sender as TTimer).Enabled := False;
+  if TPlatformServices.Current.SupportsPlatformService(IWaylandNativeWindowContract, Svc) then
+  begin
+    Size := Svc.GetBufferSize(Handle);
+    Log(Format('native: display=%p surface=%p buffer=%dx%d scale=%.2f', [Svc.GetWaylandDisplay,
+      Svc.GetWaylandSurface(Handle), Size.cx, Size.cy, Svc.GetScale(Handle)]));
+  end
+  else
+    Log('native: no IFMXWaylandNativeWindow service');
 end;
 
 procedure THelloForm.QuitTimerTimer(Sender: TObject);
