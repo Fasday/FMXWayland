@@ -6,8 +6,9 @@ libxkbcommon, loaded at run time) and draw with FMX's Skia canvas into shared-me
 
 ![The Hello sample on WSLg](docs/screenshots/hello.png)
 
-Phase 1 (this state): an FMX program with the usual controls runs on WSLg and on Weston — windows, popups, mouse,
-keyboard, clipboard, timers, modal forms, message boxes, HiDPI (integer) scale, client-side decorations. See
+Phase 1 (this state): an FMX program with the usual controls runs on WSLg, Weston, sway, KWin and GNOME Shell —
+windows, popups, mouse, keyboard, clipboard, timers, modal forms, message boxes, HiDPI scale (integer and
+fractional), xdg-activation, server-side or client-side decorations. See [Compositors](#compositors),
 [Status](#status) and [What does not work](#what-does-not-work-yet).
 
 ## How it works
@@ -49,10 +50,12 @@ FMX's own conversions stay consistent. Popups (combo box lists, popup menus — 
 become xdg_popups placed relative to their parent (the form of their placement target) and take the position the
 compositor gives them.
 
-**Decorations.** With `zxdg_decoration_manager_v1` the compositor draws the title bar. Without it (WSLg, Weston,
-GNOME) FMXWayland draws client-side decorations: a subsurface around the window with the title (rendered by FMX's
-canvas), minimize/maximize/close buttons, moving, resizing at the edges and the window menu. FMX's form rectangle
-includes them, like a frame on other platforms. `FMXWAYLAND_CSD=0` turns them off.
+**Decorations.** With `zxdg_decoration_manager_v1` the compositor draws the title bar (KWin, sway). Without it
+(WSLg, Weston, GNOME), or when the compositor answers "client-side" (sway with `border csd`), FMXWayland draws
+client-side decorations: a subsurface around the window with the title (rendered by FMX's canvas), minimize/maximize/
+close buttons (those the window manager offers in `xdg_toplevel.wm_capabilities`: sway has neither maximize nor
+minimize), moving, resizing at the edges and the window menu. FMX's form rectangle includes them, like a frame on
+other platforms. `FMXWAYLAND_CSD=0` turns them off.
 
 ## Requirements
 
@@ -148,6 +151,9 @@ Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not imp
   `-Images` takes others. Needs Docker Desktop (Linux containers). On glibc 2.31 (Debian 11) the loader refuses the
   program (`GLIBC_2.34 not found`).
 
+- `tests\compositors.ps1` — the sample on real compositors started headless in WSL (nothing on the desktop, no
+  Windows input): see [Compositors](#compositors).
+
 Evidence of the last runs: all checks of the first two passed (WSLg on Windows 11 with Ubuntu 26.04, Weston 14.0.2
 headless), and all of `glibc-compat.ps1` with the program linked against the Ubuntu 22.04 SDK (2026-10-14);
 `Hello --selftest` also runs to the end on WSLg (its seat appears only after the RDP client connects, a second or so
@@ -161,6 +167,76 @@ Headless Weston, output scale 2 (2x rendering, client-side decorations, the comb
 
 ![Weston at scale 2](docs/screenshots/weston-headless-scale2.png)
 
+## Compositors
+
+`tests\compositors.ps1` starts each compositor headless in WSL (Ubuntu 26.04: its own runtime directory, home and
+D-Bus session; nothing appears on the desktop and no Windows input is used), runs `samples\Hello` on it and checks
+its log, the compositor's view of the windows and screenshots:
+
+1. `Hello --selftest` (the checks of `tests\weston-headless.ps1`: threads, clipboard, the combo box drop-down,
+   second form, maximize/restore, modal loop, buffer size at the scale, frame dump) with a compositor screenshot while
+   the drop-down is open;
+2. where the compositor can be driven from outside, a scenario with input as a user gives it (`tests\wltool.py`, a
+   small Wayland client speaking the wire protocol, plus D-Bus): three clicks on a button, typing into `TEdit`,
+   Backspace, Home, End, Ctrl+A, Ctrl+X, Shift, the wheel both ways, the clipboard both ways with another application
+   (data-control on sway and KWin, `St.Clipboard` on GNOME Shell), the combo box popup (placed where the program asked,
+   then an item clicked at its place), the check box, a second form (focused; its "Activate main form" button
+   activates the main form with xdg-activation from a click's serial; closed by the compositor), the close button of
+   the program's own title bar, a modal form (the main form must not react to a click meanwhile), maximize/restore
+   from the program, from the compositor and from the program's title bar, resize from code (the compositor must see
+   the new size), close of the main form by the compositor and a clean exit.
+
+| | Weston 14 | sway 1.11 | sway 1.11 `border csd` | KWin 6.6 | GNOME Shell 50 (Mutter) |
+|---|---|---|---|---|---|
+| Headless | `--backend=headless` | `WLR_BACKENDS=headless` | the same | nested in a headless sway (`--virtual` too: self-test only) | `--headless --virtual-monitor` |
+| Input, window queries | none (self-test only) | wlr virtual pointer/keyboard, `swaymsg` | the same | `org_kde_kwin_fake_input`, KWin scripts | Clutter virtual devices through `org.gnome.Shell.Eval` |
+| Screenshots | `weston-screenshooter` | grim | grim | grim of the host sway | `org.gnome.Shell.Screenshot` |
+| Title bar | the program's | sway's (xdg-decoration) | the program's (xdg-decoration "client-side") | KWin's Breeze (xdg-decoration) | the program's |
+| Scale 1, 2 | pass, pass | pass, pass | pass, — | pass, pass | pass, pass |
+| Fractional 1.5 (wp-fractional-scale-v1) | not offered | pass | pass | pass | pass (`gdctl`, `scale-monitor-framebuffer`) |
+| Self-test | pass | pass (maximize n/a) | pass (maximize n/a) | pass | pass |
+| Pointer, keyboard, shortcuts, wheel | — | pass | pass | pass | pass |
+| Clipboard with another application, both ways | — | pass | pass | pass | pass |
+| Popup placed where asked, item clicked | self-test | pass | pass | pass | pass |
+| xdg-activation | not offered | pass (`focus_on_window_activation focus`) | pass | pass | pass |
+| Second form, close by the compositor | self-test | pass | pass | pass | pass |
+| Close button of the program's title bar | — | n/a | pass | n/a | pass |
+| Modal form, main form blocked | self-test | pass | pass | pass | pass |
+| Maximize/restore: program, compositor, title bar | self-test | n/a (no maximize in sway) | n/a | pass, pass, n/a | pass, pass, pass |
+| Resize from code | — | pass | pass | pass | pass |
+| Close by the compositor, clean exit | — | pass | pass | pass | pass |
+
+Last run (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK): 14 runs (Weston 1,
+2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2, 1.5), 597 checks
+passed, 15 not applicable (maximize on sway), none failed. KWin's `--virtual` backend renders with QPainter, and its
+screenshot interface (`org.kde.KWin.ScreenShot2`) needs OpenGL, which WSL cannot give it (no DRM render node): the
+test runs KWin nested in a headless sway (KWin's Wayland backend, its window fullscreen there; KWin takes the host
+output's scale), and KWin `--virtual` for the self-test alone. GNOME Shell runs with a test extension
+(`tests\gnome-test-extension`) that turns on its unsafe mode, which lets the test call `org.gnome.Shell.Eval` and
+`org.gnome.Shell.Screenshot`, and hides the overview after the startup animation (it takes the input otherwise).
+
+What the runs found and what was fixed: a window below a modal form that the compositor activated (the user clicked
+it) made FMX ask to activate it again, a loop of activation requests that kept the modal form from getting its OK
+click (sway, KWin, GNOME); the modal form gets the activation now. Title bar buttons follow
+`xdg_toplevel.wm_capabilities` (sway offers neither maximize nor minimize). FMX learns the new window rectangle when
+the compositor switches the decoration mode (sway's `border csd`; sway keeps the window's outer size, so the client
+area is 692x506 there). Popups are placed where asked on all of them (`popup configure x,y (asked x,y)` in the debug
+log).
+
+Running it (in Ubuntu 26.04: `apt install weston sway grim kwin-wayland kwin-common kwin-style-breeze gnome-shell
+mutter python3-dbus wayland-utils`):
+
+```powershell
+.\tools\build.ps1 -Project samples\Hello\Hello.dpr
+.\tests\compositors.ps1                            # all; -Runs gnome:1.5, kwin:2 for some (<compositor>:<scale>)
+```
+
+Results: `D:\Work\FMXWayland-build\shots\compositors\<compositor>-<scale>\` (`results-all.txt`, `steps.log`, the
+program's logs, screenshots, frame dumps) and `summary.md` there (the matrix of all checks).
+
+| KWin 6.6 at 1.5 (server-side title bar, combo box popup) | GNOME Shell 50 at 1.5 (the program's title bars, modal form) | sway at 1.5 with `border csd` (only a close button: sway has no maximize) |
+|---|---|---|
+| ![KWin](docs/screenshots/kwin-scale1.5-combo.png) | ![GNOME Shell](docs/screenshots/gnome-scale1.5-modal.png) | ![sway](docs/screenshots/sway-csd-scale1.5-second-form.png) |
 ## IFMXWaylandNativeWindow (contract for GPU canvases)
 
 A GPU canvas (FastCanvas on Vulkan) creates its own `VkSurfaceKHR` for a window with
@@ -198,8 +274,9 @@ that). Never change this declaration; extensions get a new interface with a new 
 
 ## Status
 
-Tested on WSLg (Weston-based, RDP; xdg_wm_base 1, no xdg-decoration, no cursor-shape, no fractional-scale) and
-Weston 14 headless (scale 1 and 2). 65 of 186 FMUX functions are assigned (41 fully, 24 partly); the full list:
+Tested on WSLg (Weston-based, RDP; xdg_wm_base 1, no xdg-decoration, no cursor-shape, no fractional-scale), and
+headless on Weston 9, 10, 14, 15, sway 1.11, KWin 6.6 and GNOME Shell 50 (see [Compositors](#compositors)). 65 of 186
+FMUX functions are assigned (41 fully, 24 partly); the full list:
 [docs/FMUX-STATUS.md](docs/FMUX-STATUS.md).
 
 | Area | FMUX functions | Status |
@@ -237,11 +314,14 @@ Weston 14 headless (scale 1 and 2). 65 of 186 FMUX functions are assigned (41 fu
 - Window positions are not under the program's control (Wayland); `Position = poScreenCenter` and the like have no
   effect. Popups do not grab the pointer (xdg_popup.grab): they close like other FMX popups (a click elsewhere in
   the program, or the form losing activation when another application is clicked).
-- Fractional scaling (wp_fractional_scale_v1 + wp_viewporter) is implemented but untested (neither WSLg nor Weston 14
-  offer it); scale changes after start (moving a window to a monitor with another scale) are reported to FMX with
-  `TScaleChangedMessage` but not tested.
-- `FmuxActivateWindow`/`FmuxWindowBringToFront` ask for activation with an xdg-activation token (the compositor
-  decides); untested, neither WSLg nor Weston 14 offer xdg_activation_v1.
+- Scale changes after start (moving a window to a monitor with another scale) are reported to FMX with
+  `TScaleChangedMessage`; tested only in the form of new windows getting the fractional scale after the output's
+  integer one (fractional scaling itself is tested on sway, KWin and GNOME Shell at 1.5).
+- `FmuxActivateWindow`/`FmuxWindowBringToFront` ask for activation with an xdg-activation token tied to the last
+  input event; the compositor decides (sway only marks the window urgent unless `focus_on_window_activation focus`;
+  KWin and GNOME Shell focus it). Without an input event yet (no serial) compositors may refuse.
+- On compositors without maximize (sway: `wm_capabilities` lists only fullscreen) `WindowState := wsMaximized` is
+  ignored by the compositor while FMX keeps `wsMaximized`.
 
 ## Next steps
 
@@ -249,8 +329,8 @@ Weston 14 headless (scale 1 and 2). 65 of 186 FMUX functions are assigned (41 fu
    `VkSurfaceKHR` on Wayland and calls `SetExternalPresentation`; test both canvases side by side.
 2. **IME** with text-input-unstable-v3 (the protocol unit exists): FmuxImeEnterControl/ExitControl/SetCaretPos to
    `enable`/`set_cursor_rectangle`, preedit to FMX's marked text.
-3. **Decorations**: polish the client-side ones (shadows, theme colors, `prefers-color-scheme` through the portal);
-   use xdg-decoration where offered (done) and test on KDE/sway and GNOME.
+3. **Decorations**: polish the client-side ones (shadows, theme colors, `prefers-color-scheme` through the portal).
+   xdg-decoration where offered and the tests on KWin, sway and GNOME Shell are done.
 4. **Drag and drop** over wl_data_device (FMX's Drag callback, FmuxBeginDragDrop), clipboard images and custom
    formats, primary selection.
 5. **File dialogs** through xdg-desktop-portal (D-Bus `org.freedesktop.portal.FileChooser`), `FmuxOpenUrl`/

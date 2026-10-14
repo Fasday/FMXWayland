@@ -14,11 +14,16 @@ libxkbcommon загружаются через `dlopen`) и рисует Skia-к
 **Что работает (фаза 1):** окна (xdg_toplevel), всплывающие окна (xdg_popup: списки комбобоксов, popup-меню),
 мышь, колесо, клавиатура (xkbcommon, автоповтор, dead keys, любые раскладки, сочетания по позиции клавиш), курсоры,
 буфер обмена (текст), таймеры, `TThread.Synchronize`, модальные формы, окна сообщений, развернуть/восстановить,
-закрытие композитором, целочисленный HiDPI-масштаб, собственные декорации окна (заголовок с кнопками, перемещение,
-изменение размера), если композитор не рисует их сам (WSLg, Weston, GNOME). Проверено на WSLg (тест с настоящим
-вводом с Windows: `tests\hello-e2e.ps1`) и на headless Weston 14 с масштабом 1 и 2 (`tests\weston-headless.ps1`).
+закрытие композитором, HiDPI-масштаб (целый и дробный, wp-fractional-scale-v1), xdg-activation, собственные
+декорации окна (заголовок с кнопками, которые предлагает оконный менеджер, перемещение, изменение размера), если
+композитор не рисует их сам (WSLg, Weston, GNOME, sway с `border csd`). Проверено на WSLg (тест с настоящим вводом с
+Windows: `tests\hello-e2e.ps1`), на headless Weston 14 с масштабом 1 и 2 (`tests\weston-headless.ps1`), на Weston 9,
+10 и 15 в контейнерах Ubuntu 22.04, Debian 12, Fedora 44 (`tests\glibc-compat.ps1`) и на sway 1.11, KWin 6.6,
+GNOME Shell 50 без экрана с масштабом 1, 2 и 1,5 с вводом, буфером обмена с другим приложением и скриншотами
+(`tests\compositors.ps1`, таблица в README.md, раздел «Compositors»).
 
-**Требования:** Delphi 13 с платформой Linux, Linux SDK (`tools\make-linux-sdk.ps1` делает его из дистрибутива WSL),
+**Требования:** Delphi 13 с платформой Linux, Linux SDK (`tools\make-linux-sdk.ps1 -CreateDistro -Install` делает его
+из дистрибутива WSL Ubuntu 22.04: программам нужна glibc 2.35 или новее),
 в программе `GlobalUseSkia := True` (канвас cairo из `FMX.Canvas.Linux` не поддерживается), рядом с программой
 `libsk4d.so`.
 
