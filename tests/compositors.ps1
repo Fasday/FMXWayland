@@ -75,10 +75,10 @@ function Get-FrameSelfTestLines([string] $Out, [string] $Label, [string] $Comp) 
       $log -match 'frame: states \$[0-9A-F]+ \([^)]*maximized[\s\S]*selftest: maximized True'
     "$($p): SetMaximized False: restored 640x420" = $log -match 'selftest: restored True 640x420'
     "$($p): SetDecorated True: decorations back" = $log -match 'selftest: decorations on: decorated True'
-    # sway and KWin keep the outer size of a window whose decoration mode changes: its client area stays smaller by
-    # their title bar once that came and went.
+    # sway and KWin keep the outer size of a window whose decoration mode changes: the client area is smaller by
+    # their title bar when the decorations go (sway gives the size back with a later configure).
     "$($p): SetDecorated False again" = $log -match ('selftest: decorations off: decorated False, client ' +
-      $(if ($Comp -in 'sway', 'kwin', 'kwin-virtual') { '\d+x\d+' } else { '640x420' }))
+      $(if ($Comp -in 'sway', 'sway-csd', 'kwin', 'kwin-virtual') { '\d+x\d+' } else { '640x420' }))
     "$($p): self-test done, clean exit" = ($log -match 'selftest: done') -and ($log -match 'exit=0')
     "$($p): no protocol errors" = $log -notmatch 'protocol error|FMXWayland: error'
   }

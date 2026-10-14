@@ -76,7 +76,9 @@ type
     /// <summary>True when the window has decorations now (FMXWayland's or the compositor's).</summary>
     function GetDecorated(const AHandle: TWindowHandle): Boolean;
     /// <summary>xdg_toplevel.move with the seat and the serial of the latest pointer button press on any surface
-    /// of the window, while it is held: call it while handling that press (MouseDown). False without one.</summary>
+    /// of the window, while it is held: call it while handling that press (MouseDown). The move starts when the
+    /// pointer is dragged 4 pixels with the button held (as GTK does), so a click or a double click stays one.
+    /// False without such a press.</summary>
     function BeginMove(const AHandle: TWindowHandle): Boolean;
     /// <summary>xdg_toplevel.resize with the seat, the serial of the latest press held on the window and AEdges
     /// (FmxwEdge*, not FmxwEdgeNone). False without a press or with invalid edges.</summary>

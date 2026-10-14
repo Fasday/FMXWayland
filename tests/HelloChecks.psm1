@@ -86,6 +86,31 @@ public static class FmxwPixels {
   public static int Count(string path, int rgb, int tolerance) {
     return Find(path, rgb, tolerance, 0, 0, -1, -1)[0];
   }
+  // The rows with at least minPerRow pixels of the color: { rows, left, top, right, bottom } of those pixels.
+  public static int[] Band(string path, int rgb, int tolerance, int minPerRow) {
+    using (var src = new Bitmap(path))
+    using (var bmp = src.Clone(new Rectangle(0, 0, src.Width, src.Height), PixelFormat.Format32bppArgb)) {
+      var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly,
+        PixelFormat.Format32bppArgb);
+      var bytes = new byte[data.Stride * data.Height];
+      Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
+      bmp.UnlockBits(data);
+      int r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, b = rgb & 255, rows = 0;
+      int l = int.MaxValue, t = int.MaxValue, rr = -1, bb = -1;
+      for (int y = 0; y < data.Height; y++) {
+        int n = 0, rl = int.MaxValue, rr2 = -1;
+        for (int x = 0; x < data.Width; x++) {
+          int i = y * data.Stride + x * 4;
+          if (Math.Abs(bytes[i + 2] - r) <= tolerance && Math.Abs(bytes[i + 1] - g) <= tolerance &&
+              Math.Abs(bytes[i] - b) <= tolerance) { n++; rl = Math.Min(rl, x); rr2 = x + 1; }
+        }
+        if (n >= minPerRow) {
+          rows++; l = Math.Min(l, rl); rr = Math.Max(rr, rr2); t = Math.Min(t, y); bb = y + 1;
+        }
+      }
+      return new int[] { rows, l, t, rr, bb };
+    }
+  }
 }
 '@
 }
@@ -100,18 +125,20 @@ function Get-ColorCount([string] $Path, [int] $Rgb, [int] $Tolerance = 8) {
 # FMXWayland's (its light gray, active or inactive) right above it. Returns @(passed, detail).
 function Test-HelloOwnTitleBarShot([string] $Path) {
   if (-not (Test-Path $Path)) { return @($false, 'no screenshot') }
+  # The caption: rows of at least 300 pixels of its color (active or inactive).
   $best = $null
   foreach ($c in 0x2B579A, 0x8AA2C8) {
-    $f = [FmxwPixels]::Find($Path, $c, 6, 0, 0, -1, -1)
+    $f = [FmxwPixels]::Band($Path, $c, 6, 300)
     if (($null -eq $best) -or ($f[0] -gt $best[0])) { $best = $f }
   }
-  if ($best[0] -lt 5000) { return @($false, "caption: $($best[0]) pixels") }
+  if ($best[0] -lt 20) { return @($false, "caption: $($best[0]) rows") }
   # 40 rows above the caption's top edge, as wide as the caption.
   $deco = 0
   foreach ($c in 0xE6E6E4, 0xF4F4F2) {
     $deco += [FmxwPixels]::Find($Path, $c, 1, $best[1], $best[2] - 40, $best[3], $best[2])[0]
   }
-  @(($deco -lt 50), "caption $($best[0]) pixels at $($best[1]),$($best[2]); $deco pixels of a title bar above it")
+  @(($deco -lt 50), ("caption {0}x{1} at {2},{3}; {4} pixels of a title bar above it" -f ($best[3] - $best[1]),
+    $best[0], $best[1], $best[2], $deco))
 }
 
 # Checks of Hello --early-popup[=...] (its log and a compositor screenshot while the drop-down is open): the popup

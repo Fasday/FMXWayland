@@ -313,8 +313,9 @@ type
     /// <summary>True when the toplevel has decorations now: its own (Csd) or the compositor's (xdg-decoration
     /// server_side, asked or given).</summary>
     function HasDecorations: Boolean;
-    /// <summary>xdg_toplevel.move with the serial of the latest pointer button press on the window (its content or
-    /// its decorations), while that press is held; False without one or for popups.</summary>
+    /// <summary>An interactive move with the latest pointer button press on the window (its content or its
+    /// decorations), while that press is held: xdg_toplevel.move with its serial once the pointer is dragged 4 pixels
+    /// (a click stays a click). False without such a press or for popups.</summary>
     function BeginMove: Boolean;
     /// <summary>xdg_toplevel.resize (AEdges: an xdg_toplevel.resize_edge value other than none) with the serial of
     /// the latest press held on the window; False without one, for popups or invalid edges.</summary>
@@ -2238,7 +2239,9 @@ begin
           xdg_toplevel_resize(FToplevel, FDisplay.FSeat, ASerial, CEdges[Part]);
       end
       else if (AState = WL_STATE_RIGHT) and (Part = TWlDecoPart.Title) and FCanWindowMenu then
-        xdg_toplevel_show_window_menu(FToplevel, FDisplay.FSeat, ASerial, Round(AX), Round(AY));
+        // In the coordinates of the window's surface (the decorations' starts at the window geometry's origin).
+        xdg_toplevel_show_window_menu(FToplevel, FDisplay.FSeat, ASerial, Round(AX) + FGeometryX,
+          Round(AY) + FGeometryY);
     TWlPointerEvent.Up:
       if (AState = WL_STATE_LEFT) and (FDecoPressed <> TWlDecoPart.None) then
       begin

@@ -798,6 +798,8 @@ end;
 {$REGION 'Application'}
 
 procedure WlInit(Flags: Integer); cdecl;
+var
+  Services: TPlatformServices;
 begin
   Disp.WakeProc :=
     procedure
@@ -810,9 +812,10 @@ begin
     GNativeServiceRegistered := True;
     TPlatformServices.Current.AddPlatformService(IFMXWaylandNativeWindow, TNativeWindowService.Create);
     TPlatformServices.Current.AddPlatformService(IFMXWaylandWindowFrame, TWindowFrameService.Create);
-    // TFont's default family and size (FMX falls back to Tahoma without it).
-    if not TPlatformServices.Current.SupportsPlatformService(IFMXSystemFontService) then
-      TPlatformServices.Current.AddPlatformService(IFMXSystemFontService, TSystemFontService.Create);
+    // TFont's default family and size (FMX falls back to Tahoma without it), unless someone registered one.
+    Services := TPlatformServices.Current;
+    if not Services.SupportsPlatformService(IFMXSystemFontService) then
+      Services.AddPlatformService(IFMXSystemFontService, TSystemFontService.Create);
   end;
 end;
 
