@@ -8,10 +8,10 @@ Pango, as with libfmux) or, optionally, with its Skia canvas.
 ![The Hello sample on WSLg](docs/screenshots/hello.png)
 
 Phase 1 (this state): an FMX program with the usual controls runs on WSLg, Weston, sway, KWin and GNOME Shell —
-windows, popups, mouse, keyboard, clipboard, timers, modal forms, message boxes, HiDPI scale (integer and
-fractional), xdg-activation, server-side or client-side decorations, on both of FMX's Linux canvases (cairo/Pango and
-Skia). See [Compositors](#compositors),
-[Status](#status) and [What does not work](#what-does-not-work-yet).
+windows, popups, mouse, keyboard, clipboard, timers, modal forms, message boxes, file dialogs (the desktop's through
+xdg-desktop-portal, FMX's own without one), HiDPI scale (integer and fractional), xdg-activation, server-side or
+client-side decorations, on both of FMX's Linux canvases (cairo/Pango and Skia). See [Dialogs](#dialogs),
+[Compositors](#compositors), [Status](#status) and [What does not work](#what-does-not-work-yet).
 
 ## How it works
 
@@ -33,9 +33,10 @@ implements what libfmux did:
 
 | Unit | What it is |
 |---|---|
-| `FMXWayland.Fmux` | The FMUX functions: windows (`TFmuxWindow` forwards Wayland events to FMX's callbacks), the paint context, bitmaps, timers, the loop, clipboard, modal loops, message boxes, `IFMXWaylandNativeWindow` |
+| `FMXWayland.Fmux` | The FMUX functions: windows (`TFmuxWindow` forwards Wayland events to FMX's callbacks), the paint context, bitmaps, timers, the loop, clipboard, modal loops, message boxes and file dialogs (through the dialog backend), `IFMXWaylandNativeWindow` |
 | `FMXWayland.Cairo`, `FMXWayland.CairoApi` | FMX's default Linux canvas (`FMX.Canvas.Linux`) served by the FMUX canvas, text layout, bitmap codec and font functions on the system's cairo, Pango and gdk-pixbuf (loaded with `dlopen` on first use); contributed by [Hemul GM](https://github.com/HemulGM) |
-| `FMXWayland.Platform` | The Wayland side, independent of FMX: connection and globals, outputs, the event loop (display fd + eventfd for wake-ups + timers, `prepare_read`/`read_events` so other readers such as Vulkan WSI can share the display), `TWlWindow` (xdg_toplevel / xdg_popup, wl_shm double/triple buffering, frame callbacks, damage, scale, client-side decorations), pointer, keyboard (xkbcommon keymap, key repeat, compose/dead keys), cursors (cursor-shape-v1 or an Xcursor theme through libwayland-cursor), clipboard (wl_data_device) |
+| `FMXWayland.Platform` | The Wayland side, independent of FMX: connection and globals, outputs, the event loop (display fd + eventfd for wake-ups + timers + watched descriptors, `prepare_read`/`read_events` so other readers such as Vulkan WSI can share the display), `TWlWindow` (xdg_toplevel / xdg_popup, wl_shm double/triple buffering, frame callbacks, damage, scale, client-side decorations, export with xdg-foreign), pointer, keyboard (xkbcommon keymap, key repeat, compose/dead keys), cursors (cursor-shape-v1 or an Xcursor theme through libwayland-cursor), clipboard (wl_data_device) |
+| `FMXWayland.Dialogs`, `FMXWayland.DialogTypes`, `FMXWayland.Portal`, `FMXWayland.DBus`, `FMXWayland.FileDialog` | Dialogs behind a replaceable backend: file dialogs through the xdg-desktop-portal FileChooser (over a small D-Bus client in Pascal, no libdbus), FMX's own file dialog form when there is no portal, message dialogs and input queries with FMX's forms (see [Dialogs](#dialogs)); contributed by [Hemul GM](https://github.com/HemulGM) |
 | `FMXWayland.Wayland`, `FMXWayland.Xkb`, `FMXWayland.WaylandCursor` | Bindings of libwayland-client, libxkbcommon, libwayland-cursor, loaded with `dlopen`: programs start without link-time dependencies and say what is missing |
 | `src\Protocols\FMXWayland.Protocol.*` | Generated from the protocol XML files in `protocols\` by `tools\gen-wayland.ps1`, a small wayland-scanner for Pascal |
 | `FMXWayland.Keys` | XKB keysyms / evdev codes -> FMX virtual keys |
@@ -69,6 +70,53 @@ close buttons (those the window manager offers in `xdg_toplevel.wm_capabilities`
 minimize), moving, resizing at the edges and the window menu. FMX's form rectangle includes them, like a frame on
 other platforms. `FMXWAYLAND_CSD=0` turns them off.
 
+## Dialogs
+
+`TOpenDialog`, `TSaveDialog` and `SelectDirectory` (FMX calls `FmuxFilesDialog`) and FMX's synchronous message
+dialogs (`FmuxMessageDialog`) go to a **dialog backend** (`FMXWayland.Dialogs`, `IFMXWaylandDialogBackend` in
+`FMXWayland.DialogTypes`). The default one:
+
+- **File dialogs through xdg-desktop-portal** (`org.freedesktop.portal.FileChooser`, the desktop's own dialog: GNOME,
+  KDE, GTK), over a private connection to the session bus made by a small D-Bus client in Pascal
+  (`FMXWayland.DBus`: Unix socket, SASL EXTERNAL, the wire format; no libdbus). Filters, the chosen filter, the
+  initial folder and name, multiple selection, folders (FileChooser version 3) are passed on. The program's window is
+  exported with **xdg-foreign** (`zxdg_exporter_v2`) and named as the dialog's parent (`wayland:<handle>`), so the
+  compositor keeps the dialog above it (GNOME, KWin, sway have it; without it the parent is ''). While the dialog is
+  open the program's loop goes on (painting, timers, threads: the bus socket is one more descriptor of the event
+  loop's poll) and its windows take no input, as under a modal form. When the program ends meanwhile, its request is
+  closed and the dialog goes away.
+- **FMX's own file dialog** (`FMXWayland.FileDialog`, an FMX form: folders and files with the filter, hidden files,
+  new folder, the location typed, multiple selection, overwrite question) when there is no portal: no session bus,
+  no xdg-desktop-portal, no FileChooser in it, folder selection with FileChooser before version 3, or
+  `FMXWAYLAND_PORTAL=0`. The fallback is immediate when the portal is not there (the bus says so); a portal that does
+  not answer is given 5 seconds.
+- **Message dialogs** with FMX's own dialog form, as before.
+
+Another backend replaces it (for example own forms), and then also serves `TDialogService` (message dialogs and input
+queries, synchronous and asynchronous); `nil` restores the default:
+
+```pascal
+uses FMXWayland.Dialogs, FMXWayland.DialogTypes;
+
+type
+  TMyDialogs = class(TFMXWaylandDialogBackend)
+  public
+    function FileDialog(const Request: TWaylandFileDialogRequest; out Files: TArray<string>;
+      var FilterIndex: Integer): Boolean; override;
+  end;
+
+SetWaylandDialogBackend(TMyDialogs.Create);
+```
+
+Limits: FMX reads the result of `FmuxFilesDialog` from a buffer of 1024 characters, so a multiple selection keeps
+the names that fit (a warning in the log names how many); `GetWaylandDialogBackend.FileDialog` has no such limit. The
+portal's dialogs ask before overwriting whatever `ofOverwritePrompt` says (GTK and KDE always do). Under GNOME
+50 the portal's file dialog is Nautilus (xdg-desktop-portal-gnome hands it over), which refuses to run as root.
+
+| GNOME Shell 50: the portal's dialog (GTK) as a child of the program's window | KWin 6.6: the portal's dialog (KDE) | FMX's own file dialog (no portal) |
+|---|---|---|
+| ![GNOME](docs/screenshots/gnome-portal-open.png) | ![KWin](docs/screenshots/kwin-portal-open.png) | ![FMX](docs/screenshots/fmx-file-dialog.png) |
+
 ## Requirements
 
 - Delphi 13 (RAD Studio 37.0) with the Linux platform (Enterprise/Architect) and FMX for Linux with its sources:
@@ -84,7 +132,9 @@ other platforms. `FMXWAYLAND_CSD=0` turns them off.
   libwayland-client0 and libxkbcommon0 (libwayland-cursor0 for cursors on compositors without cursor-shape-v1); for
   FMX's default canvas cairo, Pango, pangocairo and gdk-pixbuf with fontconfig and fonts (Debian/Ubuntu: `libcairo2
   libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0`, present on any desktop); with the Skia canvas instead,
-  `libsk4d.so` (Skia, `$(BDS)\Redist\linux64`) next to the program. No GTK, no X11, no libfmux.
+  `libsk4d.so` (Skia, `$(BDS)\Redist\linux64`) next to the program. No GTK, no X11, no libfmux. For the desktop's file
+  dialogs a session bus with xdg-desktop-portal and a backend with a FileChooser (xdg-desktop-portal-gnome,
+  -kde, -gtk; any desktop has one); without them FMX's own file dialog is used.
 
 ## Using it in a project
 
@@ -147,7 +197,8 @@ unset DISPLAY
 Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not implemented" notes (default), 2 debug,
 3 input traces; `FMXWAYLAND_DUMP_DIR=<dir>` writes the latest frame of each window as a BMP (debugging);
 `FMXWAYLAND_CSD=0` no client-side decorations; `FMXWAYLAND_APP_ID` the xdg app id (default: the program name);
-`XCURSOR_THEME`, `XCURSOR_SIZE` for cursor themes.
+`FMXWAYLAND_PORTAL=0` FMX's own file dialogs instead of the portal's; `XCURSOR_THEME`, `XCURSOR_SIZE` for cursor
+themes.
 
 ## Tests
 
@@ -159,14 +210,23 @@ Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not imp
   maximize buttons of the client-side title bar, maximize/restore, resize from code, clean exit. Needs an
   interactive desktop nobody else is using (it takes the mouse for about a minute).
 - `tests\weston-headless.ps1` — non-interactive: the sample on a private headless Weston 14 at output scale 1 and
-  2 (buffer size through `IFMXWaylandNativeWindow`, the self-test steps up to a message box answered by a timer, the
-  program's frame dumps, a compositor screenshot, clean exit). `-BuildRoot <root of a NOSKIA build> -Canvas
-  TLinuxCanvas` runs it on FMX's default canvas.
+  2 (buffer size through `IFMXWaylandNativeWindow`, the self-test steps up to a message box answered by a timer, file
+  dialogs without a session bus — FMX's own, driven by timers: the folder listed through the filter without hidden
+  files, two files of a multiple selection, save over an existing file with another filter and the overwrite
+  question, a folder, cancel —, the program's frame dumps, a compositor screenshot, clean exit). `-BuildRoot <root of
+  a NOSKIA build> -Canvas TLinuxCanvas` runs it on FMX's default canvas.
 - `tests\canvas-check.ps1` — builds `tests\CanvasCheck` for both canvases and runs them on headless Weston at scale 1
   and 2: the same drawing (gradients, opacity, dashes and caps, bitmap brushes, scaled and partial bitmaps, the PNG
   codec, text beyond the BMP, wrapping, alignment, trimming, styles, rotation, text as a path, a degenerate matrix),
   checks of what the program measures (positions around a surrogate pair, PtInPath, the PNG round trip) and the two
   frames side by side, Skia left, cairo right.
+- `tests\dialog-check.ps1` — builds `tests\DialogCheck` and runs it on headless Weston with a private session bus:
+  the D-Bus client against the real dbus-daemon (an address list with a missing socket first, an abstract socket,
+  `guid=`, `unix:runtime=yes`, a non-Unix address; SASL EXTERNAL; strings, arrays and a dictionary of variants; an
+  error reply's name; a timeout; a subscribed signal; a pump that cancels; no portal: unavailable after 1 ms) and the
+  dialog backend with a test backend (what `TOpenDialog`, `TSaveDialog`, `SelectDirectory`, `TDialogService` and
+  the FMUX dialog functions hand it and get back; 20 of 30 long names fit into FMX's buffer; `nil` restores FMX's
+  dialog services).
 - `tests\glibc-compat.ps1` — the glibc symbol versions Hello and `libsk4d.so` need (`objdump -T`, at most 2.35),
   then Hello's self-test on the headless Weston of other distributions in Docker containers (no screen, no GPU;
   images with the run-time libraries, built once as `fmxwayland-compat:<image>`): `ubuntu:22.04` (glibc 2.35,
@@ -180,7 +240,9 @@ Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not imp
 Evidence of the last runs: all checks of the first two passed (WSLg on Windows 11 with Ubuntu 26.04, Weston 14.0.2
 headless), and all of `glibc-compat.ps1` with the program linked against the Ubuntu 22.04 SDK (2026-10-14);
 `Hello --selftest` also runs to the end on WSLg (its seat appears only after the RDP client connects, a second or so
-after the program starts: the clipboard falls back to a process-local one until then).
+after the program starts: the clipboard falls back to a process-local one until then). With the dialogs:
+`weston-headless.ps1` passed on both canvases (46 and 48 checks: Skia, cairo), `dialog-check.ps1` passed (27 checks);
+the end-to-end test on WSLg was not run again (it takes the Windows desktop).
 
 | | |
 |---|---|
@@ -214,9 +276,19 @@ its log, the compositor's view of the windows and screenshots:
    (data-control on sway and KWin, `St.Clipboard` on GNOME Shell), the combo box popup (placed where the program asked,
    then an item clicked at its place), the check box, a second form (focused; its "Activate main form" button
    activates the main form with xdg-activation from a click's serial; closed by the compositor), the close button of
-   the program's own title bar, a modal form (the main form must not react to a click meanwhile), maximize/restore
-   from the program, from the compositor and from the program's title bar, resize from code (the compositor must see
-   the new size), close of the main form by the compositor and a clean exit.
+   the program's own title bar, a modal form (the main form must not react to a click meanwhile), FMX's own file
+   dialogs (the program's session bus has no portal: a double click opens a file, a typed name saves, Escape
+   cancels), maximize/restore from the program, from the compositor and from the program's title bar, resize from code
+   (the compositor must see the new size), close of the main form by the compositor and a clean exit;
+3. on sway, KWin and GNOME Shell the **portal's file dialog**: xdg-desktop-portal started by D-Bus activation in the
+   run's session with the compositor's backend (sway: xdg-desktop-portal-gtk; KWin: -kde; GNOME Shell: -gtk, since
+   xdg-desktop-portal-gnome hands file dialogs to Nautilus, which does not run as root): the request, the program's
+   window exported with xdg-foreign as the parent and the dialog its child for the compositor (KWin, GNOME Shell
+   report it), the program's loop running meanwhile and its main window ignoring the compositor's close, a file chosen
+   by typing its path, a name typed into the save dialog, Escape, `Request.Close` from another client refused by the
+   portal, the program ending while a folder dialog is open (its request closed, the dialog gone), a clean exit.
+   What cannot be automated: a click into the portal's dialog at a known place (its layout is the toolkit's; the
+   keyboard answers it), and the program's windows under it (the dialogs cover them on a 1280x800 output).
 
 | | Weston 14 | sway 1.11 | sway 1.11 `border csd` | KWin 6.6 | GNOME Shell 50 (Mutter) |
 |---|---|---|---|---|---|
@@ -234,13 +306,19 @@ its log, the compositor's view of the windows and screenshots:
 | Second form, close by the compositor | self-test | pass | pass | pass | pass |
 | Close button of the program's title bar | — | n/a | pass | n/a | pass |
 | Modal form, main form blocked | self-test | pass | pass | pass | pass |
+| FMX's own file dialogs (no portal): double click opens, typed name saves, Escape | self-test (no bus) | pass | pass | pass | pass |
+| The portal's file dialog (backend) | not run | pass (xdg-desktop-portal-gtk) | pass (-gtk) | pass (-kde) | pass (-gtk: -gnome's Nautilus does not run as root) |
+| Its parent: the program's window through xdg-foreign | — | exported (sway does not report the relation) | exported | pass | pass |
+| Meanwhile: the program's loop runs, its main window ignores a close | — | pass | pass | pass | pass |
+| Keyboard answers (path, name), Escape, the program ending during a dialog | — | pass | pass | pass | pass |
 | Maximize/restore: program, compositor, title bar | self-test | n/a (no maximize in sway) | n/a | pass, pass, n/a | pass, pass, pass |
 | Resize from code | — | pass | pass | pass | pass |
 | Close by the compositor, clean exit | — | pass | pass | pass | pass |
 
-Last run (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK): 14 runs (Weston 1,
-2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2, 1.5), 597 checks
-passed, 15 not applicable (maximize on sway), none failed. KWin's `--virtual` backend renders with QPainter, and its
+Last run (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK, with the dialogs):
+14 runs (Weston 1, 2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2,
+1.5), 946 checks passed, 26 not applicable (maximize on sway; a click on the program's window under the portal's
+dialog, which covers it), none failed. KWin's `--virtual` backend renders with QPainter, and its
 screenshot interface (`org.kde.KWin.ScreenShot2`) needs OpenGL, which WSL cannot give it (no DRM render node): the
 test runs KWin nested in a headless sway (KWin's Wayland backend, its window fullscreen there; KWin takes the host
 output's scale), and KWin `--virtual` for the self-test alone. GNOME Shell runs with a test extension
@@ -252,11 +330,18 @@ it) made FMX ask to activate it again, a loop of activation requests that kept t
 click (sway, KWin, GNOME); the modal form gets the activation now. Title bar buttons follow
 `xdg_toplevel.wm_capabilities` (sway offers neither maximize nor minimize). FMX learns the new window rectangle when
 the compositor switches the decoration mode (sway's `border csd`; sway keeps the window's outer size, so the client
-area is 692x506 there). Popups are placed where asked on all of them (`popup configure x,y (asked x,y)` in the debug
-log).
+area is 692x506 there), and lays the form out again then (FMX's file dialog had its buttons cut off: FMX saw the
+same window rectangle and did not realign its aligned controls). Popups are placed where asked on all of them
+(`popup configure x,y (asked x,y)` in the debug log). The portal part found what the portals need in a session
+without a desktop session manager: `XDG_CURRENT_DESKTOP` and `XDG_SESSION_TYPE=wayland` (else
+xdg-desktop-portal-gnome serves settings only), the compositor's display in the D-Bus activation environment before
+the compositor starts (GNOME Shell and KWin start the portal at once), Qt's Wayland shell integration
+(`qt6-wayland`) for xdg-desktop-portal-kde; xdg-desktop-portal-gtk answers Escape with response 2, and
+xdg-desktop-portal 1.21 refuses `Request.Close` from another client.
 
 Running it (in Ubuntu 26.04: `apt install weston sway grim kwin-wayland kwin-common kwin-style-breeze gnome-shell
-mutter python3-dbus wayland-utils`):
+mutter python3-dbus wayland-utils`, for the portal part `xdg-desktop-portal xdg-desktop-portal-gtk
+xdg-desktop-portal-kde xdg-desktop-portal-gnome qt6-wayland`):
 
 ```powershell
 .\tools\build.ps1 -Project samples\Hello\Hello.dpr
@@ -308,7 +393,7 @@ that). Never change this declaration; extensions get a new interface with a new 
 
 Tested on WSLg (Weston-based, RDP; xdg_wm_base 1, no xdg-decoration, no cursor-shape, no fractional-scale), and
 headless on Weston 9, 10, 14, 15, sway 1.11, KWin 6.6 and GNOME Shell 50 (see [Compositors](#compositors)); the cairo
-canvas on Weston 14 and sway 1.11. 102 of 186 FMUX functions are assigned (76 fully, 26 partly); the full list:
+canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fully, 27 partly); the full list:
 [docs/FMUX-STATUS.md](docs/FMUX-STATUS.md).
 
 | Area | FMUX functions | Status |
@@ -325,8 +410,8 @@ canvas on Weston 14 and sway 1.11. 102 of 186 FMUX functions are assigned (76 fu
 | FMX's default canvas (cairo, Pango, gdk-pixbuf) | FmuxCreateContext, FmuxDestroyContext, FmuxSave/Restore, FmuxSetClipRects, FmuxIntersect/ExcludeClipRect, FmuxCanvas* (paths, fills, strokes, dashes, gradients, bitmap brushes, matrix, quality, clear, PtInPath), FmuxCreateTextLayout ... FmuxLayoutToPath, FmuxBitmapLoad, FmuxBitmapSave | implemented |
 | Clipboard | FmuxClipboardHas/Get/SetText | implemented |
 | Clipboard, other formats | FmuxClipboardHas/GetImage, FmuxClipboardHas/GetCustom (report "none"); FmuxClipboardSetImage/SetCustom/SetArray | partial / stub |
-| Dialogs | FmuxMessageDialog (FMX's own dialog form) | partial |
-| Dialogs | FmuxFilesDialog, FmuxInputQuery (FMX uses its own input query anyway) | stub |
+| Dialogs | FmuxFilesDialog (portal's file dialog, FMX's own without a portal) | implemented |
+| Dialogs | FmuxMessageDialog (FMX's own dialog form, or the backend's), FmuxInputQuery (the backend's; FMX uses its own input query anyway) | partial |
 | IME | FmuxImeEnterControl/ExitControl/SetCaretPos (no-ops: characters come from xkbcommon) | partial |
 | Tooltips, gestures | FmuxAddTooltip/RemoveTooltip, FmuxAdd/RemoveGestureRecognizer (no-ops) | partial |
 | OpenGL contexts, PDF canvas | FmuxCreateSharedContext, FmuxCreateThreadContext, FmuxMakeCurrentContext, FmuxFlushBuffer, FmuxCreatePDFContext... | stub |
@@ -344,8 +429,11 @@ canvas on Weston 14 and sway 1.11. 102 of 186 FMUX functions are assigned (76 fu
   wired yet), printing and PDF (`FmuxCreatePDFContext`), OpenGL contexts. Pango spaces wrapped lines by the font's
   metrics, a little wider than Skia for some fonts (Ubuntu); FMX's own dialogs size themselves to it.
 - `TMainMenu` (a native menu bar under GTK): not shown. Popup menus (`TPopupMenu`) are FMX forms and work.
-- Drag and drop (also between applications), file dialogs, clipboard images and custom formats, IME (text-input-v3),
-  touch and gestures, tooltips, window icons, printing, web browser, media player.
+- Drag and drop (also between applications), clipboard images and custom formats, IME (text-input-v3), touch and
+  gestures, tooltips, window icons, printing, web browser, media player.
+- File dialogs: a multiple selection through `TOpenDialog` keeps what fits into FMX's 1024 characters; the portal's
+  dialogs always ask before overwriting; `TSaveDialog.DefaultExt` is not passed by FMX. FMX's own file dialog has
+  no places/bookmarks, icons or previews.
 - Window positions are not under the program's control (Wayland); `Position = poScreenCenter` and the like have no
   effect. Popups do not grab the pointer (xdg_popup.grab): they close like other FMX popups (a click elsewhere in
   the program, or the form losing activation when another application is clicked).
@@ -368,8 +456,8 @@ canvas on Weston 14 and sway 1.11. 102 of 186 FMUX functions are assigned (76 fu
    xdg-decoration where offered and the tests on KWin, sway and GNOME Shell are done.
 4. **Drag and drop** over wl_data_device (FMX's Drag callback, FmuxBeginDragDrop), clipboard images and custom
    formats, primary selection.
-5. **File dialogs** through xdg-desktop-portal (D-Bus `org.freedesktop.portal.FileChooser`), `FmuxOpenUrl`/
-   `FmuxOpenFile` through the OpenURI portal or `xdg-open`.
+5. `FmuxOpenUrl`/`FmuxOpenFile` through the OpenURI portal (the D-Bus client is there) or `xdg-open`; the dark style
+   preference through the Settings portal.
 6. **Menus**: draw `TMainMenu` as an FMX menu bar inside the window.
 7. Popup grabs (`xdg_popup.grab` for menus), `xdg_popup.reposition` (version 3), window icons
    (xdg-toplevel-icon), touch (wl_touch -> FMX touch/gesture callbacks).
@@ -379,8 +467,11 @@ canvas on Weston 14 and sway 1.11. 102 of 186 FMUX functions are assigned (76 fu
 
 ## Contributors
 
-- **Hemul GM** — FMX's default Linux canvas on cairo, Pango and gdk-pixbuf (`FMXWayland.Cairo`,
-  `FMXWayland.CairoApi`): ordinary FMX programs draw on FMXWayland without Skia.
+- **[Hemul GM](https://github.com/HemulGM)** — FMX's default Linux canvas on cairo, Pango and gdk-pixbuf
+  (`FMXWayland.Cairo`, `FMXWayland.CairoApi`): ordinary FMX programs draw on FMXWayland without Skia; dialogs
+  (`FMXWayland.DBus`, `FMXWayland.Portal`, `FMXWayland.Dialogs`, `FMXWayland.DialogTypes`, `FMXWayland.FileDialog`):
+  a D-Bus client in Pascal, the xdg-desktop-portal file dialogs, FMX's own file dialog and the replaceable dialog
+  backend.
 
 Thank you!
 

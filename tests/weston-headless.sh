@@ -27,7 +27,9 @@ while [ ! -S "$RT/fmxw-test" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
 export WAYLAND_DISPLAY=fmxw-test
 wayland-info > "$OUT/wayland-info.txt" 2>&1
 cd "$(dirname "$PROG")"
-FMXWAYLAND_LOG=2 FMXWAYLAND_DUMP_DIR="$OUT" timeout 60 "$PROG" "$@" > "$OUT/program.log" 2>&1 &
+# No session bus (an address that does not exist): the file dialogs fall back to FMX's own at once.
+DBUS_SESSION_BUS_ADDRESS="unix:path=$RT/no-session-bus" FMXWAYLAND_LOG=2 FMXWAYLAND_DUMP_DIR="$OUT" \
+  timeout 60 "$PROG" "$@" > "$OUT/program.log" 2>&1 &
 PPID2=$!
 sleep "${SHOT_AFTER:-3}"
 (cd "$OUT" && timeout 10 weston-screenshooter > "$OUT/screenshooter.log" 2>&1)

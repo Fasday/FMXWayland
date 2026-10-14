@@ -31,6 +31,17 @@ function Get-HelloSelfTestChecks([string] $Log, [string] $Prefix, [double] $Scal
     "$($Prefix): restore to ${Width}x${Height}" = $Log -match "selftest: restored ${Width}x${Height}"
     "$($Prefix): modal loop ended by a timer (mrRetry)" = $Log -match 'selftest: modal result 4'
     "$($Prefix): message box answered by a timer (mrNo)" = $Log -match 'selftest: message result 7'
+    "$($Prefix): no portal: FMX's file dialog instead" =
+      $Log -match 'portal: no file dialog \(.*\); FMX''s file dialog instead'
+    "$($Prefix): file dialog lists the folder (filter *.txt, no hidden files)" =
+      $Log -match 'selftest: file dialog "Self-test open" lists sub/,alpha\.txt,beta\.txt\r?\n'
+    "$($Prefix): open: two files chosen (multiple selection)" =
+      $Log -match 'selftest: open result True alpha\.txt,beta\.txt in the folder True filter 1'
+    "$($Prefix): save: overwrite question answered" = $Log -match 'selftest: overwrite question answered Yes'
+    "$($Prefix): save: existing file, other filter" =
+      $Log -match 'selftest: save result True beta\.txt in the folder True filter 2'
+    "$($Prefix): select folder" = $Log -match 'selftest: folder result True sub in the folder True'
+    "$($Prefix): file dialog cancelled" = $Log -match 'selftest: cancelled dialog result False, 0 files'
     "$($Prefix): self-test done" = $Log -match 'selftest: done'
     "$($Prefix): clean exit" = $Log -match 'exit=0'
   }

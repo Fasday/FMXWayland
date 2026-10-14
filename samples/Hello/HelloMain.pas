@@ -46,10 +46,26 @@ type
     FSelfTimer: TTimer;
     FSelfStep: Integer;
     FSelfSecond: TForm;
+    FDialogDir: string;
+    FDialogLabel: TLabel;
+    FDialogOpen: Boolean;
+    FFolderDialogSince: TDateTime;
+    FQuitInFolderDialog: Integer;
+    FSelfDir: string;
+    FSelfTries: Integer;
     procedure Log(const AText: string);
     procedure SelfTestStep(Sender: TObject);
     procedure SelfTestModalTimer(Sender: TObject);
     procedure SelfTestMessageTimer(Sender: TObject);
+    procedure SelfTestDialogs;
+    procedure SelfTestDialogTimer(Sender: TObject);
+    procedure SelfTestConfirmTimer(Sender: TObject);
+    function StartSelfTestTimer(const AHandler: TNotifyEvent): TTimer;
+    procedure OpenButtonClick(Sender: TObject);
+    procedure SaveButtonClick(Sender: TObject);
+    procedure FolderButtonClick(Sender: TObject);
+    procedure ShowDialogResult(const AKind: string; const AResult: Boolean; const AFiles: string;
+      const AFilterIndex: Integer);
     function AddLabel(const AX, AY, AWidth: Single; const AText: string): TLabel;
     function AddButton(const AX, AY, AWidth: Single; const AText: string; const AOnClick: TNotifyEvent): TButton;
     procedure ClickButtonClick(Sender: TObject);
@@ -80,7 +96,7 @@ implementation
 {$R *.fmx}
 
 uses
-  System.UIConsts, System.DateUtils, FMX.Platform, FMX.DialogService.Sync;
+  System.UIConsts, System.DateUtils, System.IOUtils, FMX.Platform, FMX.DialogService.Sync, FMX.Dialogs;
 
 type
   /// The contract of FMXWayland.Native.IFMXWaylandNativeWindow, declared here again (same GUID, same methods) the way
@@ -144,6 +160,10 @@ begin
       QuitAfter := StrToIntDef(S.Substring(Length('--quit-after=')), 0)
     else if S = '--verbose' then
       FVerbose := True
+    else if S.StartsWith('--dialog-dir=') then
+      FDialogDir := S.Substring(Length('--dialog-dir='))
+    else if S.StartsWith('--quit-in-folder-dialog=') then
+      FQuitInFolderDialog := StrToIntDef(S.Substring(Length('--quit-in-folder-dialog=')), 0)
     else if S = '--selftest' then
     begin
       FVerbose := True;
@@ -240,6 +260,14 @@ begin
   with AddLabel(20, 440, 660, Format('FMXWayland: FMX on Wayland without libfmux and GTK; %s, wl_shm.',
     [TCanvasManager.DefaultCanvas.ClassName])) do
     TextSettings.FontColor := TAlphaColors.Gray;
+
+  // File dialogs: the portal's when there is one, FMX's own otherwise.
+  AddButton(20, 470, 110, 'Open file...', OpenButtonClick);
+  AddButton(140, 470, 110, 'Save file...', SaveButtonClick);
+  AddButton(260, 470, 120, 'Select folder...', FolderButtonClick);
+  FDialogLabel := AddLabel(395, 473, 295, 'Dialog: -');
+  if FDialogDir = '' then
+    FDialogDir := GetEnvironmentVariable('HOME');
 
   FAnimTimer := TTimer.Create(Self);
   FAnimTimer.Interval := 16;
@@ -497,6 +525,82 @@ begin
   FClipLabel.Text := Format('Message result: %d', [R]);
 end;
 
+procedure THelloForm.ShowDialogResult(const AKind: string; const AResult: Boolean; const AFiles: string;
+  const AFilterIndex: Integer);
+begin
+  Log(Format('%s dialog result %s files "%s" filter %d', [AKind, BoolToStr(AResult, True), AFiles, AFilterIndex]));
+  if AResult then
+    FDialogLabel.Text := AKind + ': ' + AFiles
+  else
+    FDialogLabel.Text := AKind + ': cancelled';
+end;
+
+procedure THelloForm.OpenButtonClick(Sender: TObject);
+var
+  D: TOpenDialog;
+  R: Boolean;
+begin
+  D := TOpenDialog.Create(nil);
+  try
+    D.Title := 'Hello: open a file';
+    D.InitialDir := FDialogDir;
+    D.Filter := 'Text files (*.txt)|*.txt|All files (*.*)|*.*';
+    D.FilterIndex := 1;
+    Log('open dialog shown');
+    FDialogOpen := True;
+    try
+      R := D.Execute;
+    finally
+      FDialogOpen := False;
+    end;
+    ShowDialogResult('open', R, D.Files.CommaText, D.FilterIndex);
+  finally
+    D.Free;
+  end;
+end;
+
+procedure THelloForm.SaveButtonClick(Sender: TObject);
+var
+  D: TSaveDialog;
+  R: Boolean;
+begin
+  D := TSaveDialog.Create(nil);
+  try
+    D.Title := 'Hello: save a file';
+    D.InitialDir := FDialogDir;
+    D.FileName := 'hello.txt';
+    D.Filter := 'Text files (*.txt)|*.txt|All files (*.*)|*.*';
+    D.Options := D.Options + [TOpenOption.ofOverwritePrompt];
+    Log('save dialog shown');
+    FDialogOpen := True;
+    try
+      R := D.Execute;
+    finally
+      FDialogOpen := False;
+    end;
+    ShowDialogResult('save', R, D.FileName, D.FilterIndex);
+  finally
+    D.Free;
+  end;
+end;
+
+procedure THelloForm.FolderButtonClick(Sender: TObject);
+var
+  Dir: string;
+  R: Boolean;
+begin
+  Log('folder dialog shown');
+  FDialogOpen := True;
+  FFolderDialogSince := Now;
+  try
+    R := SelectDirectory('Hello: select a folder', FDialogDir, Dir);
+  finally
+    FDialogOpen := False;
+    FFolderDialogSince := 0;
+  end;
+  ShowDialogResult('folder', R, Dir, 0);
+end;
+
 procedure THelloForm.ResizeButtonClick(Sender: TObject);
 begin
   ClientWidth := 760;
@@ -515,6 +619,17 @@ begin
   if Secs >= 1 then
   begin
     FStatusLabel.Text := Format('Timer: %.0f ticks/s', [FTicks / Secs]);
+    // The loop must go on while another program's (a portal's) file dialog is open.
+    if FDialogOpen then
+      Log(Format('timer during the dialog: %.0f ticks/s', [FTicks / Secs]));
+    // Tests: the program ends while a folder dialog is open (the dialog must be closed with it).
+    if (FQuitInFolderDialog > 0) and (FFolderDialogSince <> 0) and
+      (SecondsBetween(Now, FFolderDialogSince) >= FQuitInFolderDialog) then
+    begin
+      FFolderDialogSince := 0;
+      Log('closing during the folder dialog');
+      Close;
+    end;
     FTicks := 0;
     FTickStart := Now;
   end;
@@ -557,8 +672,199 @@ begin
     end;
 end;
 
-/// --selftest: steps without user input (threads, clipboard, popup, second form, maximize, modal loop, message box);
-/// each step writes "selftest: ..." to the log; tests\weston-headless.ps1 checks them.
+function THelloForm.StartSelfTestTimer(const AHandler: TNotifyEvent): TTimer;
+begin
+  Result := TTimer.Create(Self);
+  Result.Interval := 700;
+  Result.OnTimer := AHandler;
+  Result.Enabled := True;
+end;
+
+/// The visible file dialog form of FMXWayland (by its class name: the sample does not use FMXWayland's units).
+function FindFileDialog: TCommonCustomForm;
+var
+  I: Integer;
+begin
+  for I := 0 to Screen.FormCount - 1 do
+    if Screen.Forms[I].Visible and (Screen.Forms[I].ClassName = 'TFMXWaylandFileDialog') then
+      Exit(Screen.Forms[I]);
+  Result := nil;
+end;
+
+/// The names of AFiles, comma separated, and whether all of them are in ADir.
+function DescribeFiles(const AFiles: TStrings; const ADir: string): string;
+var
+  S: string;
+  InDir: Boolean;
+begin
+  Result := '';
+  InDir := AFiles.Count > 0;
+  for S in AFiles do
+  begin
+    if Result <> '' then
+      Result := Result + ',';
+    Result := Result + TPath.GetFileName(S);
+    InDir := InDir and (TPath.GetDirectoryName(S) = ADir);
+  end;
+  Result := Result + ' in the folder ' + BoolToStr(InDir, True);
+end;
+
+procedure THelloForm.SelfTestDialogs;
+const
+  CFiles: array[0..3] of string = ('alpha.txt', 'beta.txt', 'gamma.log', '.hidden.txt');
+var
+  Open: TOpenDialog;
+  Save: TSaveDialog;
+  Files: TStringList;
+  Dir: string;
+  R: Boolean;
+begin
+  FSelfTries := 0;
+  case FSelfStep of
+    15:
+      begin
+        // A folder of known files: the dialog must list sub/, alpha.txt, beta.txt (not gamma.log, not hidden).
+        FSelfDir := TPath.Combine(TPath.GetTempPath, Format('fmxw-selftest-%d', [MainThreadID]));
+        TDirectory.CreateDirectory(TPath.Combine(FSelfDir, 'sub'));
+        for Dir in CFiles do
+          TFile.WriteAllText(TPath.Combine(FSelfDir, Dir), Dir);
+        Open := TOpenDialog.Create(nil);
+        try
+          Open.Title := 'Self-test open';
+          Open.InitialDir := FSelfDir;
+          Open.Filter := 'Text files (*.txt)|*.txt|Logs|*.log';
+          Open.FilterIndex := 1;
+          Open.Options := Open.Options + [TOpenOption.ofAllowMultiSelect];
+          StartSelfTestTimer(SelfTestDialogTimer);
+          R := Open.Execute;
+          Log(Format('selftest: open result %s %s filter %d', [BoolToStr(R, True), DescribeFiles(Open.Files,
+            FSelfDir), Open.FilterIndex]));
+        finally
+          Open.Free;
+        end;
+      end;
+    16:
+      begin
+        Save := TSaveDialog.Create(nil);
+        Files := TStringList.Create;
+        try
+          Save.Title := 'Self-test save';
+          Save.InitialDir := FSelfDir;
+          Save.FileName := 'new.txt';
+          Save.Filter := 'Text files (*.txt)|*.txt|All files|*';
+          Save.Options := Save.Options + [TOpenOption.ofOverwritePrompt];
+          StartSelfTestTimer(SelfTestDialogTimer);
+          R := Save.Execute;
+          if R then
+            Files.Add(Save.FileName);
+          Log(Format('selftest: save result %s %s filter %d', [BoolToStr(R, True), DescribeFiles(Files, FSelfDir),
+            Save.FilterIndex]));
+        finally
+          Files.Free;
+          Save.Free;
+        end;
+      end;
+    17:
+      begin
+        StartSelfTestTimer(SelfTestDialogTimer);
+        R := SelectDirectory('Self-test folder', FSelfDir, Dir);
+        Log(Format('selftest: folder result %s %s in the folder %s', [BoolToStr(R, True), TPath.GetFileName(Dir),
+          BoolToStr(TPath.GetDirectoryName(Dir) = FSelfDir, True)]));
+      end;
+    18:
+      begin
+        Open := TOpenDialog.Create(nil);
+        try
+          Open.Title := 'Self-test cancel';
+          Open.InitialDir := FSelfDir;
+          StartSelfTestTimer(SelfTestDialogTimer);
+          R := Open.Execute;
+          Log(Format('selftest: cancelled dialog result %s, %d files', [BoolToStr(R, True), Open.Files.Count]));
+        finally
+          Open.Free;
+        end;
+      end;
+  end;
+end;
+
+procedure THelloForm.SelfTestDialogTimer(Sender: TObject);
+var
+  F: TCommonCustomForm;
+  List: TListBox;
+  Accept: TButton;
+  Names: string;
+  I: Integer;
+begin
+  // Runs inside the modal loop of the file dialog (FMX's own: the self-test runs without a portal).
+  F := FindFileDialog;
+  if F = nil then
+  begin
+    Inc(FSelfTries);
+    if FSelfTries >= 15 then
+    begin
+      (Sender as TTimer).Enabled := False;
+      Log('selftest: no FMX file dialog appeared');
+    end;
+    Exit;
+  end;
+  (Sender as TTimer).Enabled := False;
+  List := F.FindComponent('FileList') as TListBox;
+  Accept := F.FindComponent('AcceptButton') as TButton;
+  Names := '';
+  for I := 0 to List.Count - 1 do
+  begin
+    if Names <> '' then
+      Names := Names + ',';
+    Names := Names + List.ListItems[I].Text;
+  end;
+  Log(Format('selftest: file dialog "%s" lists %s', [F.Caption, Names]));
+  case FSelfStep of
+    15:
+      begin
+        // Two files of a multiple selection.
+        for I := 0 to List.Count - 1 do
+          List.ListItems[I].IsSelected := (List.ListItems[I].Text = 'alpha.txt') or
+            (List.ListItems[I].Text = 'beta.txt');
+        Accept.OnClick(Accept);
+      end;
+    16:
+      begin
+        // Another filter, and a name that exists: the question to replace it is answered by another timer.
+        (F.FindComponent('FilterCombo') as TComboBox).ItemIndex := 1;
+        (F.FindComponent('NameEdit') as TEdit).Text := 'beta.txt';
+        StartSelfTestTimer(SelfTestConfirmTimer);
+        Accept.OnClick(Accept);
+      end;
+    17:
+      begin
+        for I := 0 to List.Count - 1 do
+          if List.ListItems[I].Text = 'sub/' then
+            List.ItemIndex := I;
+        Accept.OnClick(Accept);
+      end;
+  else
+    F.ModalResult := mrCancel;
+  end;
+end;
+
+procedure THelloForm.SelfTestConfirmTimer(Sender: TObject);
+var
+  I: Integer;
+begin
+  // Runs inside the modal loop of the question whether to replace the file: answers Yes.
+  (Sender as TTimer).Enabled := False;
+  for I := Screen.FormCount - 1 downto 0 do
+    if (Screen.Forms[I] <> Self) and Screen.Forms[I].Visible and
+      (Screen.Forms[I].ClassName <> 'TFMXWaylandFileDialog') then
+    begin
+      Log('selftest: overwrite question answered Yes');
+      Screen.Forms[I].ModalResult := mrYes;
+      Exit;
+    end;
+end;
+
+/// --selftest: steps without user input (threads, clipboard, popup, second form, maximize, modal loop, message box,
+/// file dialogs); each step writes "selftest: ..." to the log; tests\weston-headless.ps1 checks them.
 procedure THelloForm.SelfTestStep(Sender: TObject);
 var
   Svc: IFMXClipboardService;
@@ -664,9 +970,17 @@ begin
         end;
         FSelfTimer.Enabled := True;
       end;
-    15:
+    15..18:
       begin
         FSelfTimer.Enabled := False;
+        SelfTestDialogs;
+        FSelfTimer.Enabled := True;
+      end;
+    19:
+      begin
+        FSelfTimer.Enabled := False;
+        if FSelfDir <> '' then
+          TDirectory.Delete(FSelfDir, True);
         Log('selftest: done');
         Close;
       end;

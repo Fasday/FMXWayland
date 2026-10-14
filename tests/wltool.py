@@ -24,6 +24,8 @@ Commands (coordinates in logical pixels of the layout):
   copy TEXT | paste                     the clipboard as another application
   geometry TITLE                        "x y w h" of the window's geometry (with client-side decorations if any)
   focus                                 title of the focused window
+  parent TITLE                          title of the window TITLE is transient for ('' if none)
+  windows                               the titles of all windows, separated by '|'
   close TITLE | maximize TITLE | restore TITLE
   shot FILE                             a PNG of the output
   settle                                waits until the shell takes no input itself (GNOME: overview, modal grabs)
@@ -474,6 +476,13 @@ class Gnome:
     def focus(self):
         return self.eval('const w = global.display.focus_window; w ? w.get_title() : ""')
 
+    def parent(self, title):
+        return self.eval('const w = %s; const p = w ? w.get_transient_for() : null; p ? p.get_title() : ""'
+                         % (self.WIN % json.dumps(title)))
+
+    def windows(self):
+        return '|'.join(self.eval('global.get_window_actors().map(a => a.meta_window.get_title() || "")'))
+
     def close(self, title):
         self.eval('%s.delete(global.get_current_time()); "ok"' % (self.WIN % json.dumps(title)))
 
@@ -534,6 +543,13 @@ class Sway:
                 return v.get('name') or ''
         return ''
 
+    def parent(self, title):
+        self.view(title)
+        return '(not reported by sway)'
+
+    def windows(self):
+        return '|'.join(v.get('name') or '' for v in self.views())
+
     def close(self, title):
         self.msg('[con_id=%d]' % self.view(title)['id'], 'kill')
 
@@ -591,6 +607,16 @@ class KWin:
 
     def focus(self):
         return self.script('const w = workspace.activeWindow; out(w ? w.caption : "");')
+
+    def parent(self, title):
+        r = self.script(self.WIN % json.dumps(title) + 'if (!w) out("none"); '
+                        'else out(w.transientFor ? w.transientFor.caption : "");')
+        if r == 'none':
+            raise RuntimeError('no window "%s"' % title)
+        return r
+
+    def windows(self):
+        return self.script('out(workspace.windowList().map(w => w.caption).join("|"));')
 
     def close(self, title):
         self.script(self.WIN % json.dumps(title) + 'w.closeWindow(); out("ok");')
@@ -653,6 +679,10 @@ def run(inp, wm, line):
         result = wm.geometry(arg)
     elif cmd == 'focus':
         result = wm.focus()
+    elif cmd == 'parent':
+        result = wm.parent(arg)
+    elif cmd == 'windows':
+        result = wm.windows()
     elif cmd == 'close':
         wm.close(arg)
     elif cmd in ('maximize', 'restore'):

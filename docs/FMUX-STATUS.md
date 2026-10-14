@@ -104,9 +104,9 @@ calls logs `<name> is not implemented` once at run time.
 | FmuxMenuAddItem | stub |
 | FmuxSetSubmenu | stub |
 | FmuxUpdateMenuItem | stub |
-| FmuxMessageDialog | partial: FMX's own dialog form, not a native one |
-| FmuxInputQuery | stub |
-| FmuxFilesDialog | stub |
+| FmuxMessageDialog | partial: FMX's own dialog form (or the dialog backend's) |
+| FmuxInputQuery | partial: the dialog backend's (FMX uses its own form anyway) |
+| FmuxFilesDialog | implemented |
 | FmuxClipboardHasText | implemented |
 | FmuxClipboardGetText | implemented |
 | FmuxClipboardSetText | implemented |
