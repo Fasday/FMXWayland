@@ -473,9 +473,34 @@ begin
   end;
 end;
 
+type
+  /// <summary>Access to the form's protected layout methods.</summary>
+  TFormAccess = class(TCommonCustomForm);
+
 procedure TFmuxWindow.DoResized;
+var
+  F: TCommonCustomForm;
+  OldWidth, OldHeight: Integer;
 begin
+  F := Form;
+  if (F = nil) or (F.Handle = nil) then
+  begin
+    ReportBounds;
+    Exit;
+  end;
+  OldWidth := F.Width;
+  OldHeight := F.Height;
   ReportBounds;
+  // The client area changed inside a window of the same outer size (decorations switched by the compositor, as
+  // sway's "border csd" does): FMX's SetBounds sees no change and would not lay the form out again.
+  if (F.Width = OldWidth) and (F.Height = OldHeight) then
+    try
+      TFormAccess(F).ResizeHandle;
+      TFormAccess(F).Resize;
+      TMessageManager.DefaultManager.SendMessage(F, TSizeChangedMessage.Create(TSize.Create(F.Width, F.Height)));
+    except
+      Application.HandleException(F);
+    end;
 end;
 
 procedure TFmuxWindow.DoMoved;
