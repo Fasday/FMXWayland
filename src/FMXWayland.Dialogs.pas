@@ -1,4 +1,9 @@
-{ FMXWayland: replaceable dialog services. MIT license. }
+{ FMXWayland: replaceable dialog services.
+  Written by Hemul GM. Copyright (c) 2026 Fasday and contributors. MIT license, see LICENSE. }
+
+/// <summary>Dialog services of FMXWayland behind a replaceable backend (IFMXWaylandDialogBackend): file dialogs
+/// through the xdg-desktop-portal FileChooser with an automatic fallback to FMX's own dialogs; message dialogs and
+/// input queries with FMX's dialog forms.</summary>
 unit FMXWayland.Dialogs;
 
 interface
@@ -7,7 +12,7 @@ uses
   System.SysUtils, System.UITypes, FMX.Dialogs, FMXWayland.DialogTypes;
 
 type
-  // A complete FMX backend; override individual methods to use your own forms.
+  /// <summary>A complete FMX backend; override individual methods to use your own forms.</summary>
   TFMXWaylandDialogBackend = class(TInterfacedObject, IFMXWaylandDialogBackend)
   public
     function FileDialog(const Request: TWaylandFileDialogRequest; out Files: TArray<string>;
@@ -18,10 +23,12 @@ type
       var Values: TArray<string>): Boolean; virtual;
   end;
 
-// Call from the UI thread. nil restores Portal with automatic FMX fallback.
+/// <summary>Replaces the dialog backend. Call from the UI thread; nil restores the portal with automatic FMX
+/// fallback.</summary>
 procedure SetWaylandDialogBackend(const Backend: IFMXWaylandDialogBackend);
+/// <summary>The dialog backend.</summary>
 function GetWaylandDialogBackend: IFMXWaylandDialogBackend;
-// Platform event processing and external modality; custom FMX backends use ShowModal themselves.
+/// <summary>Platform event processing and external modality; custom FMX backends use ShowModal themselves.</summary>
 procedure ConfigureWaylandDialogHooks(const Pump: TFunc<Boolean>; const BeginModal, EndModal: TProc);
 
 implementation
@@ -31,12 +38,14 @@ uses
   FMXWayland.Portal, FMXWayland.DBus, FMXWayland.FileDialog;
 
 type
+  /// <summary>File dialogs through the portal, FMX's dialogs when there is none.</summary>
   TPortalDialogBackend = class(TFMXWaylandDialogBackend)
   public
     function FileDialog(const Request: TWaylandFileDialogRequest; out Files: TArray<string>;
       var FilterIndex: Integer): Boolean; override;
   end;
 
+  /// <summary>FMX's dialog services (TDialogService...) through the backend.</summary>
   TWaylandDialogService = class(TInterfacedObject, IFMXDialogServiceSync, IFMXDialogServiceAsync)
   public
     procedure ShowMessageSync(const AMessage: string);
@@ -64,19 +73,23 @@ type
 var
   GBackend: IFMXWaylandDialogBackend;
   GPump: TFunc<Boolean>;
-  GBeginModal, GEndModal: TProc;
+  GBeginModal: TProc;
+  GEndModal: TProc;
   GService: IInterface;
 
 function CopyStrings(const Values: array of string): TArray<string>;
-var I: Integer;
+var
+  I: Integer;
 begin
   SetLength(Result, Length(Values));
-  for I := 0 to High(Values) do Result[I] := Values[I];
+  for I := 0 to High(Values) do
+    Result[I] := Values[I];
 end;
 
 procedure RegisterService;
 begin
-  if GService = nil then GService := TWaylandDialogService.Create;
+  if GService = nil then
+    GService := TWaylandDialogService.Create;
   TPlatformServices.Current.RemovePlatformService(IFMXDialogServiceSync);
   TPlatformServices.Current.RemovePlatformService(IFMXDialogServiceAsync);
   TPlatformServices.Current.AddPlatformService(IFMXDialogServiceSync, GService);
@@ -92,7 +105,8 @@ end;
 
 function GetWaylandDialogBackend: IFMXWaylandDialogBackend;
 begin
-  if GBackend = nil then GBackend := TPortalDialogBackend.Create;
+  if GBackend = nil then
+    GBackend := TPortalDialogBackend.Create;
   Result := GBackend;
 end;
 
@@ -103,15 +117,20 @@ begin
   GEndModal := EndModal;
 end;
 
+{$REGION 'TFMXWaylandDialogBackend'}
+
 function TFMXWaylandDialogBackend.MessageDialog(const Message: string; DialogType: TMsgDlgType;
   Buttons: TMsgDlgButtons; DefaultButton: TMsgDlgBtn): TModalResult;
-var R: TModalResult;
+var
+  R: TModalResult;
 begin
   MessageDialogCheckInUIThread;
   R := mrNone;
   TDialogHelper.MessageDialog(Message, DialogType, Buttons, DefaultButton, 0,
     procedure(const AResult: TModalResult)
-    begin R := AResult; end, True);
+    begin
+      R := AResult;
+    end, True);
   Result := R;
 end;
 
@@ -128,27 +147,44 @@ begin
   Result := ExecuteFMXFileDialog(Request, Files, FilterIndex);
 end;
 
+{$ENDREGION}
+
+{$REGION 'TPortalDialogBackend'}
+
 function TPortalDialogBackend.FileDialog(const Request: TWaylandFileDialogRequest;
   out Files: TArray<string>; var FilterIndex: Integer): Boolean;
-var Fallback: Boolean;
+var
+  Fallback: Boolean;
 begin
   MessageDialogCheckInUIThread;
   Fallback := False;
   Result := False;
-  if Assigned(GBeginModal) then GBeginModal();
+  if Assigned(GBeginModal) then
+    GBeginModal();
   try
     try
       Result := PortalFileDialog(Request, Files, FilterIndex, GPump);
     except
-      on E: EDBusCancelled do begin Files := nil; Result := False; end;
-      on E: EPortalUnavailable do Fallback := True;
+      on E: EDBusCancelled do
+      begin
+        Files := nil;
+        Result := False;
+      end;
+      on E: EPortalUnavailable do
+        Fallback := True;
     end;
   finally
-    if Assigned(GEndModal) then GEndModal();
+    if Assigned(GEndModal) then
+      GEndModal();
   end;
   // End external modality before opening an FMX form, otherwise its input would also be blocked.
-  if Fallback then Result := inherited FileDialog(Request, Files, FilterIndex);
+  if Fallback then
+    Result := inherited FileDialog(Request, Files, FilterIndex);
 end;
+
+{$ENDREGION}
+
+{$REGION 'TWaylandDialogService'}
 
 procedure TWaylandDialogService.ShowMessageSync(const AMessage: string);
 begin
@@ -157,7 +193,8 @@ end;
 
 function TWaylandDialogService.MessageDialogSync(const AMessage: string; const ADialogType: TMsgDlgType;
   const AButtons: TMsgDlgButtons; const ADefaultButton: TMsgDlgBtn; const AHelpCtx: THelpContext): Integer;
-var Backend: IFMXWaylandDialogBackend;
+var
+  Backend: IFMXWaylandDialogBackend;
 begin
   MessageDialogCheckInUIThread;
   Backend := GetWaylandDialogBackend;
@@ -166,7 +203,10 @@ end;
 
 function TWaylandDialogService.InputQuerySync(const ACaption: string; const APrompts: array of string;
   var AValues: array of string): Boolean;
-var Backend: IFMXWaylandDialogBackend; Prompts, Values: TArray<string>; I: Integer;
+var
+  Backend: IFMXWaylandDialogBackend;
+  Prompts, Values: TArray<string>;
+  I: Integer;
 begin
   MessageDialogCheckInUIThread;
   Backend := GetWaylandDialogBackend;
@@ -175,19 +215,23 @@ begin
   Result := Backend.InputQuery(ACaption, Prompts, Values);
   if Result then
   begin
-    if Length(Values) <> Length(AValues) then raise EArgumentException.Create('Dialog backend changed the value count');
-    for I := 0 to High(AValues) do AValues[I] := Values[I];
+    if Length(Values) <> Length(AValues) then
+      raise EArgumentException.Create('Dialog backend changed the value count');
+    for I := 0 to High(AValues) do
+      AValues[I] := Values[I];
   end;
 end;
 
 procedure TWaylandDialogService.ShowMessageAsync(const AMessage: string);
-var Callback: TInputCloseDialogProc;
+var
+  Callback: TInputCloseDialogProc;
 begin
   Callback := nil;
   ShowMessageAsync(AMessage, Callback);
 end;
 
-procedure TWaylandDialogService.ShowMessageAsync(const AMessage: string; const ACloseDialogProc: TInputCloseDialogProc);
+procedure TWaylandDialogService.ShowMessageAsync(const AMessage: string;
+  const ACloseDialogProc: TInputCloseDialogProc);
 begin
   MessageDialogAsync(AMessage, TMsgDlgType.mtCustom, [TMsgDlgBtn.mbOK], TMsgDlgBtn.mbOK, 0, ACloseDialogProc);
 end;
@@ -195,22 +239,31 @@ end;
 procedure TWaylandDialogService.ShowMessageAsync(const AMessage: string;
   const ACloseDialogEvent: TInputCloseDialogEvent; const AContext: TObject);
 begin
-  ShowMessageAsync(AMessage, procedure(const R: TModalResult)
-    begin if Assigned(ACloseDialogEvent) then ACloseDialogEvent(AContext, R); end);
+  ShowMessageAsync(AMessage,
+    procedure(const R: TModalResult)
+    begin
+      if Assigned(ACloseDialogEvent) then
+        ACloseDialogEvent(AContext, R);
+    end);
 end;
 
 procedure TWaylandDialogService.MessageDialogAsync(const AMessage: string; const ADialogType: TMsgDlgType;
   const AButtons: TMsgDlgButtons; const ADefaultButton: TMsgDlgBtn; const AHelpCtx: THelpContext;
   const ACloseDialogProc: TInputCloseDialogProc);
-var Backend: IFMXWaylandDialogBackend;
+var
+  Backend: IFMXWaylandDialogBackend;
 begin
   MessageDialogCheckInUIThread;
-  Backend := GetWaylandDialogBackend; // A switch affects subsequent requests, not an already queued dialog.
-  TThread.ForceQueue(nil, procedure
-    var R: TModalResult;
+  // A switch affects subsequent requests, not an already queued dialog.
+  Backend := GetWaylandDialogBackend;
+  TThread.ForceQueue(nil,
+    procedure
+    var
+      R: TModalResult;
     begin
       R := Backend.MessageDialog(AMessage, ADialogType, AButtons, ADefaultButton);
-      if Assigned(ACloseDialogProc) then ACloseDialogProc(R);
+      if Assigned(ACloseDialogProc) then
+        ACloseDialogProc(R);
     end);
 end;
 
@@ -220,46 +273,65 @@ procedure TWaylandDialogService.MessageDialogAsync(const AMessage: string; const
 begin
   MessageDialogAsync(AMessage, ADialogType, AButtons, ADefaultButton, AHelpCtx,
     procedure(const R: TModalResult)
-    begin if Assigned(ACloseDialogEvent) then ACloseDialogEvent(AContext, R); end);
+    begin
+      if Assigned(ACloseDialogEvent) then
+        ACloseDialogEvent(AContext, R);
+    end);
 end;
 
 procedure TWaylandDialogService.InputQueryAsync(const ACaption: string; const APrompts: array of string;
   const ADefaultValues: array of string; const ACloseDialogProc: TInputCloseQueryProc);
-var Backend: IFMXWaylandDialogBackend; Prompts, Values: TArray<string>;
+var
+  Backend: IFMXWaylandDialogBackend;
+  Prompts, Values: TArray<string>;
 begin
   MessageDialogCheckInUIThread;
   Backend := GetWaylandDialogBackend;
   Prompts := CopyStrings(APrompts);
   Values := CopyStrings(ADefaultValues);
-  TThread.ForceQueue(nil, procedure
-    var R: TModalResult; EditedValues: TArray<string>;
+  TThread.ForceQueue(nil,
+    procedure
+    var
+      R: TModalResult;
+      EditedValues: TArray<string>;
     begin
       EditedValues := Copy(Values);
       if Backend.InputQuery(ACaption, Prompts, EditedValues) then
       begin
-        if Length(EditedValues) <> Length(Values) then raise EArgumentException.Create('Dialog backend changed the value count');
+        if Length(EditedValues) <> Length(Values) then
+          raise EArgumentException.Create('Dialog backend changed the value count');
         R := mrOK;
         Values := EditedValues;
       end
-      else R := mrCancel;
-      if Assigned(ACloseDialogProc) then ACloseDialogProc(R, Values);
+      else
+        R := mrCancel;
+      if Assigned(ACloseDialogProc) then
+        ACloseDialogProc(R, Values);
     end);
 end;
 
 procedure TWaylandDialogService.InputQueryAsync(const ACaption: string; const APrompts: array of string;
-  const ADefaultValues: array of string; const ACloseQueryEvent: TInputCloseQueryWithResultEvent; const AContext: TObject);
+  const ADefaultValues: array of string; const ACloseQueryEvent: TInputCloseQueryWithResultEvent;
+  const AContext: TObject);
 begin
   InputQueryAsync(ACaption, APrompts, ADefaultValues,
     procedure(const R: TModalResult; const Values: array of string)
-    begin if Assigned(ACloseQueryEvent) then ACloseQueryEvent(AContext, R, Values); end);
+    begin
+      if Assigned(ACloseQueryEvent) then
+        ACloseQueryEvent(AContext, R, Values);
+    end);
 end;
+
+{$ENDREGION}
 
 initialization
   RegisterService;
+
 finalization
   GBackend := nil;
   GService := nil;
   GPump := nil;
   GBeginModal := nil;
   GEndModal := nil;
+
 end.

@@ -1,4 +1,8 @@
-{ FMXWayland: a small D-Bus client over Unix sockets, using only Delphi RTL. MIT license. }
+{ FMXWayland: a small D-Bus client over Unix sockets, using only the Delphi RTL.
+  Written by Hemul GM. Copyright (c) 2026 Fasday and contributors. MIT license, see LICENSE. }
+
+/// <summary>A small D-Bus client (no libdbus): a private connection to the session bus over its Unix socket, SASL
+/// EXTERNAL authentication, method calls and signals with the marshalled values of the D-Bus wire format.</summary>
 unit FMXWayland.DBus;
 
 interface
@@ -7,15 +11,21 @@ uses
   System.SysUtils, System.Classes, System.Generics.Collections;
 
 type
+  /// <summary>A D-Bus failure; RemoteName is the error name of an error reply ('' for local failures).</summary>
   EDBusError = class(Exception)
   public
     RemoteName: string;
     constructor CreateRemote(const Name, Message: string);
   end;
+  /// <summary>No session bus to connect to.</summary>
   EDBusUnavailable = class(EDBusError);
+  /// <summary>No answer in time.</summary>
   EDBusTimeout = class(EDBusError);
+  /// <summary>The pump asked to stop waiting.</summary>
   EDBusCancelled = class(EDBusError);
 
+  /// <summary>A D-Bus value of a single complete type: numbers in Number, strings, object paths and signatures in
+  /// Text, byte arrays in Bytes, the items of other containers in Children (a variant has one child).</summary>
   TDBusValue = class
   public
     Signature, Text: string;
@@ -25,7 +35,9 @@ type
     constructor Create(const ASignature: string);
     destructor Destroy; override;
     function Clone: TDBusValue;
+    /// <summary>The value of the entry Key of a dictionary (a{sv}: unwrapped from its variant), or nil.</summary>
     function Item(const Key: string): TDBusValue;
+    /// <summary>Adds the entry Key: Value (wrapped into a variant) to an a{sv} dictionary; takes Value over.</summary>
     procedure AddOption(const Key: string; Value: TDBusValue);
     class function Str(const Value: string; const Sig: string = 's'): TDBusValue; static;
     class function UInt(Value: Cardinal): TDBusValue; static;
@@ -33,6 +45,7 @@ type
     class function ByteArray(const Value: TBytes): TDBusValue; static;
   end;
 
+  /// <summary>A message received: Kind 1 method call, 2 method return, 3 error, 4 signal.</summary>
   TDBusMessage = class
   public
     Kind: Byte;
@@ -43,6 +56,9 @@ type
     destructor Destroy; override;
   end;
 
+  /// <summary>A private connection to the session bus.</summary>
+  /// <remarks>Waiting (for replies, signals, the authentication) calls the pump, which processes the application's
+  /// events; a pump that returns False cancels the wait with EDBusCancelled.</remarks>
   TDBusConnection = class
   private
     FFd: Integer;
@@ -59,14 +75,21 @@ type
   public
     constructor Create(const APump: TFunc<Boolean> = nil);
     destructor Destroy; override;
+    /// <summary>Calls a method and waits for its reply (raises EDBusError for an error reply).</summary>
     function Call(const Destination, Path, Intf, Member: string; const Args: array of TDBusValue;
       Timeout: Integer = 5000): TDBusMessage;
+    /// <summary>Adds a match rule (org.freedesktop.DBus.AddMatch).</summary>
     procedure AddMatch(const Rule: string);
-    procedure StopPumping; // Cleanup may need to close a portal request after the application pump stopped.
+    /// <summary>Stops calling the pump (cleanup may need to close a portal request after the application's pump
+    /// stopped).</summary>
+    procedure StopPumping;
+    /// <summary>Waits for a signal; nil after Timeout milliseconds.</summary>
     function WaitSignal(const Path, Intf, Member: string; Timeout: Integer): TDBusMessage;
     property UniqueName: string read FUniqueName;
   end;
 
+/// <summary>The address of the session bus: DBUS_SESSION_BUS_ADDRESS, else $XDG_RUNTIME_DIR-style
+/// /run/user/&lt;uid&gt;/bus, else an X11-autolaunched bus of ~/.dbus/session-bus.</summary>
 function FindSessionBus: string;
 
 implementation
@@ -86,6 +109,7 @@ type
     Name: array[0..107] of AnsiChar;
   end;
 
+  /// <summary>Marshals values (little endian).</summary>
   TWireWriter = class
     Stream: TMemoryStream;
     constructor Create;
@@ -99,6 +123,7 @@ type
     function Data: TBytes;
   end;
 
+  /// <summary>Unmarshals values of a message (either endianness); positions count from the message start.</summary>
   TWireReader = class
     Data: TBytes;
     Position, Depth: Integer;
@@ -114,10 +139,14 @@ type
 function Alignment(const Sig: string): Integer;
 begin
   case Sig[1] of
-    'y', 'g', 'v': Result := 1;
-    'n', 'q': Result := 2;
-    'b', 'i', 'u', 's', 'o', 'a': Result := 4;
-    'x', 't', 'd', '(', '{': Result := 8;
+    'y', 'g', 'v':
+      Result := 1;
+    'n', 'q':
+      Result := 2;
+    'b', 'i', 'u', 's', 'o', 'a':
+      Result := 4;
+    'x', 't', 'd', '(', '{':
+      Result := 8;
   else
     raise EDBusError.Create('Unsupported D-Bus type: ' + Sig);
   end;
@@ -129,6 +158,7 @@ begin
   RemoteName := Name;
 end;
 
+/// The single complete type at Index of Sig; Index moves past it.
 function NextType(const Sig: string; var Index: Integer): string;
 var
   Start: Integer;
@@ -138,21 +168,33 @@ begin
     raise EDBusError.Create('Incomplete D-Bus signature');
   Start := Index;
   case Sig[Index] of
-    'a': begin Inc(Index); NextType(Sig, Index); end;
+    'a':
+      begin
+        Inc(Index);
+        NextType(Sig, Index);
+      end;
     '(', '{':
       begin
-        if Sig[Index] = '(' then Terminator := ')' else Terminator := '}';
+        if Sig[Index] = '(' then
+          Terminator := ')'
+        else
+          Terminator := '}';
         Inc(Index);
-        while (Index <= Length(Sig)) and (Sig[Index] <> Terminator) do NextType(Sig, Index);
-        if Index > Length(Sig) then raise EDBusError.Create('Unclosed D-Bus container');
+        while (Index <= Length(Sig)) and (Sig[Index] <> Terminator) do
+          NextType(Sig, Index);
+        if Index > Length(Sig) then
+          raise EDBusError.Create('Unclosed D-Bus container');
         Inc(Index);
       end;
-    'y', 'b', 'n', 'q', 'i', 'u', 'x', 't', 'd', 's', 'o', 'g', 'v': Inc(Index);
+    'y', 'b', 'n', 'q', 'i', 'u', 'x', 't', 'd', 's', 'o', 'g', 'v':
+      Inc(Index);
   else
     raise EDBusError.Create('Invalid D-Bus signature');
   end;
   Result := Copy(Sig, Start, Index - Start);
 end;
+
+{$REGION 'TDBusValue, TDBusMessage'}
 
 constructor TDBusValue.Create(const ASignature: string);
 begin
@@ -175,7 +217,8 @@ begin
   Result.Text := Text;
   Result.Number := Number;
   Result.Bytes := Copy(Bytes);
-  for Child in Children do Result.Children.Add(Child.Clone);
+  for Child in Children do
+    Result.Children.Add(Child.Clone);
 end;
 
 class function TDBusValue.Str(const Value: string; const Sig: string): TDBusValue;
@@ -223,7 +266,8 @@ begin
     if (Entry.Children.Count = 2) and (Entry.Children[0].Text = Key) then
     begin
       Result := Entry.Children[1];
-      while (Result.Signature = 'v') and (Result.Children.Count = 1) do Result := Result.Children[0];
+      while (Result.Signature = 'v') and (Result.Children.Count = 1) do
+        Result := Result.Children[0];
       Exit;
     end;
 end;
@@ -239,6 +283,10 @@ begin
   Body.Free;
   inherited;
 end;
+
+{$ENDREGION}
+
+{$REGION 'TWireWriter'}
 
 constructor TWireWriter.Create;
 begin
@@ -259,19 +307,22 @@ end;
 
 procedure TWireWriter.Align(Boundary: Integer);
 begin
-  while Stream.Position mod Boundary <> 0 do ByteValue(0);
+  while Stream.Position mod Boundary <> 0 do
+    ByteValue(0);
 end;
 
 procedure TWireWriter.UIntValue(Value: UInt64; Count: Integer);
 var
   I: Integer;
 begin
-  for I := 0 to Count - 1 do ByteValue(Byte(Value shr (8 * I)));
+  for I := 0 to Count - 1 do
+    ByteValue(Byte(Value shr (8 * I)));
 end;
 
 procedure TWireWriter.Raw(const Data: TBytes);
 begin
-  if Length(Data) > 0 then Stream.WriteBuffer(Data[0], Length(Data));
+  if Length(Data) > 0 then
+    Stream.WriteBuffer(Data[0], Length(Data));
 end;
 
 procedure TWireWriter.Sig(const Value: string);
@@ -279,7 +330,8 @@ var
   Bytes: TBytes;
 begin
   Bytes := TEncoding.ASCII.GetBytes(Value);
-  if Length(Bytes) > 255 then raise EDBusError.Create('D-Bus signature is too long');
+  if Length(Bytes) > 255 then
+    raise EDBusError.Create('D-Bus signature is too long');
   ByteValue(Length(Bytes));
   Raw(Bytes);
   ByteValue(0);
@@ -293,22 +345,29 @@ var
 begin
   Align(Alignment(Item.Signature));
   case Item.Signature[1] of
-    'y': UIntValue(Item.Number, 1);
-    'n', 'q': UIntValue(Item.Number, 2);
-    'b', 'i', 'u': UIntValue(Item.Number, 4);
-    'x', 't', 'd': UIntValue(Item.Number, 8);
+    'y':
+      UIntValue(Item.Number, 1);
+    'n', 'q':
+      UIntValue(Item.Number, 2);
+    'b', 'i', 'u':
+      UIntValue(Item.Number, 4);
+    'x', 't', 'd':
+      UIntValue(Item.Number, 8);
     's', 'o':
       begin
-        if Item.Text.Contains(#0) then raise EDBusError.Create('NUL in D-Bus string');
+        if Item.Text.Contains(#0) then
+          raise EDBusError.Create('NUL in D-Bus string');
         Bytes := TEncoding.UTF8.GetBytes(Item.Text);
         UIntValue(Length(Bytes), 4);
         Raw(Bytes);
         ByteValue(0);
       end;
-    'g': Sig(Item.Text);
+    'g':
+      Sig(Item.Text);
     'v':
       begin
-        if Item.Children.Count <> 1 then raise EDBusError.Create('Invalid D-Bus variant');
+        if Item.Children.Count <> 1 then
+          raise EDBusError.Create('Invalid D-Bus variant');
         Sig(Item.Children[0].Signature);
         Value(Item.Children[0]);
       end;
@@ -318,22 +377,32 @@ begin
         UIntValue(0, 4);
         Align(Alignment(Copy(Item.Signature, 2, MaxInt)));
         StartAt := Stream.Position;
-        if Item.Signature = 'ay' then Raw(Item.Bytes)
-        else for Child in Item.Children do Value(Child);
+        if Item.Signature = 'ay' then
+          Raw(Item.Bytes)
+        else
+          for Child in Item.Children do
+            Value(Child);
         EndAt := Stream.Position;
         Stream.Position := SizeAt;
         UIntValue(EndAt - StartAt, 4);
         Stream.Position := EndAt;
       end;
-    '(', '{': for Child in Item.Children do Value(Child);
+    '(', '{':
+      for Child in Item.Children do
+        Value(Child);
   end;
 end;
 
 function TWireWriter.Data: TBytes;
 begin
   SetLength(Result, Stream.Size);
-  if Stream.Size > 0 then Move(Stream.Memory^, Result[0], Stream.Size);
+  if Stream.Size > 0 then
+    Move(Stream.Memory^, Result[0], Stream.Size);
 end;
+
+{$ENDREGION}
+
+{$REGION 'TWireReader'}
 
 constructor TWireReader.Create(const AData: TBytes; ALittle: Boolean);
 begin
@@ -362,7 +431,10 @@ begin
   Result := 0;
   for I := 0 to Count - 1 do
   begin
-    if Little then Shift := I * 8 else Shift := (Count - 1 - I) * 8;
+    if Little then
+      Shift := I * 8
+    else
+      Shift := (Count - 1 - I) * 8;
     Result := Result or (UInt64(Data[Position + I]) shl Shift);
   end;
   Inc(Position, Count);
@@ -376,7 +448,8 @@ begin
   Require(Count + 1);
   Result := TEncoding.ASCII.GetString(Data, Position, Count);
   Inc(Position, Count);
-  if UIntValue(1) <> 0 then raise EDBusError.Create('Unterminated D-Bus signature');
+  if UIntValue(1) <> 0 then
+    raise EDBusError.Create('Unterminated D-Bus signature');
 end;
 
 function TWireReader.Value(const Signature: string): TDBusValue;
@@ -385,26 +458,34 @@ var
   ChildSig: string;
 begin
   Inc(Depth);
-  if Depth > 32 then raise EDBusError.Create('D-Bus container nesting limit');
+  if Depth > 32 then
+    raise EDBusError.Create('D-Bus container nesting limit');
   Align(Alignment(Signature));
   Result := TDBusValue.Create(Signature);
   try
     try
       case Signature[1] of
-        'y': Result.Number := UIntValue(1);
-        'n', 'q': Result.Number := UIntValue(2);
-        'b', 'i', 'u': Result.Number := UIntValue(4);
-        'x', 't', 'd': Result.Number := UIntValue(8);
+        'y':
+          Result.Number := UIntValue(1);
+        'n', 'q':
+          Result.Number := UIntValue(2);
+        'b', 'i', 'u':
+          Result.Number := UIntValue(4);
+        'x', 't', 'd':
+          Result.Number := UIntValue(8);
         's', 'o':
           begin
             Count := UIntValue(4);
             Require(Count + 1);
             Result.Text := TEncoding.UTF8.GetString(Data, Position, Count);
             Inc(Position, Count);
-            if UIntValue(1) <> 0 then raise EDBusError.Create('Unterminated D-Bus string');
+            if UIntValue(1) <> 0 then
+              raise EDBusError.Create('Unterminated D-Bus string');
           end;
-        'g': Result.Text := Sig;
-        'v': Result.Children.Add(Value(Sig));
+        'g':
+          Result.Text := Sig;
+        'v':
+          Result.Children.Add(Value(Sig));
         'a':
           begin
             Count := UIntValue(4);
@@ -418,8 +499,10 @@ begin
               Position := StopAt;
             end
             else
-              while Position < StopAt do Result.Children.Add(Value(ChildSig));
-            if Position <> StopAt then raise EDBusError.Create('Invalid D-Bus array size');
+              while Position < StopAt do
+                Result.Children.Add(Value(ChildSig));
+            if Position <> StopAt then
+              raise EDBusError.Create('Invalid D-Bus array size');
           end;
         '(', '{':
           begin
@@ -440,6 +523,11 @@ begin
   end;
 end;
 
+{$ENDREGION}
+
+{$REGION 'Session bus address'}
+
+/// The bytes of a D-Bus address value with its %XX escapes decoded.
 function DecodeAddress(const Value: string): UTF8String;
 var
   I, N, Count: Integer;
@@ -453,9 +541,11 @@ begin
   begin
     if B[I] = Ord('%') then
     begin
-      if I + 2 >= Length(B) then raise EDBusError.Create('Invalid D-Bus address escape');
+      if I + 2 >= Length(B) then
+        raise EDBusError.Create('Invalid D-Bus address escape');
       N := StrToIntDef('$' + Char(B[I + 1]) + Char(B[I + 2]), -1);
-      if N < 0 then raise EDBusError.Create('Invalid D-Bus address escape');
+      if N < 0 then
+        raise EDBusError.Create('Invalid D-Bus address escape');
       Inc(Count);
       Result[Count] := AnsiChar(N);
       Inc(I, 3);
@@ -475,9 +565,11 @@ var
   Candidate, Directory, FileName, Line: string;
 begin
   Result := GetEnvironmentVariable('DBUS_SESSION_BUS_ADDRESS');
-  if Result <> '' then Exit;
+  if Result <> '' then
+    Exit;
   Candidate := '/run/user/' + UIntToStr(getuid) + '/bus';
-  if FileExists(Candidate) then Exit('unix:path=' + Candidate);
+  if FileExists(Candidate) then
+    Exit('unix:path=' + Candidate);
   // WSL without systemd commonly has an X11-autolaunched bus. Read its address, never execute the cache file.
   Directory := TPath.Combine(GetEnvironmentVariable('HOME'), '.dbus/session-bus');
   if DirectoryExists(Directory) then
@@ -489,14 +581,20 @@ begin
             Result := Copy(Line, Length('DBUS_SESSION_BUS_ADDRESS=') + 1, MaxInt).Trim;
             if (Length(Result) >= 2) and (Result[1] = #39) and (Result[Length(Result)] = #39) then
               Result := Copy(Result, 2, Length(Result) - 2);
-            if Result.StartsWith('unix:') then Exit;
+            if Result.StartsWith('unix:') then
+              Exit;
           end;
   raise EDBusUnavailable.Create('FMXWayland: no session bus; set DBUS_SESSION_BUS_ADDRESS');
 end;
 
+{$ENDREGION}
+
+{$REGION 'TDBusConnection'}
+
 procedure TDBusConnection.Pump;
 begin
-  if Assigned(FPump) and not FPump() then raise EDBusCancelled.Create('D-Bus request cancelled');
+  if Assigned(FPump) and not FPump() then
+    raise EDBusCancelled.Create('D-Bus request cancelled');
 end;
 
 procedure TDBusConnection.StopPumping;
@@ -524,17 +622,21 @@ begin
     if Entry.StartsWith('unix:') then
     begin
       for Part in Copy(Entry, 6, MaxInt).Split([',']) do
-        if Part.StartsWith('path=') then Value := Copy(Part, 6, MaxInt)
+        if Part.StartsWith('path=') then
+          Value := Copy(Part, 6, MaxInt)
         else if Part.StartsWith('abstract=') then
         begin
           Value := Copy(Part, 10, MaxInt);
           Abstract := True;
         end;
-      if Value <> '' then Break;
+      if Value <> '' then
+        Break;
     end;
-  if Value = '' then raise EDBusUnavailable.Create('FMXWayland: session bus needs a Unix socket');
+  if Value = '' then
+    raise EDBusUnavailable.Create('FMXWayland: session bus needs a Unix socket');
   Name := DecodeAddress(Value);
-  if (Length(Name) = 0) or (Length(Name) > 106) then raise EDBusError.Create('Invalid D-Bus socket path');
+  if (Length(Name) = 0) or (Length(Name) > 106) then
+    raise EDBusError.Create('Invalid D-Bus socket path');
   FillChar(Addr, SizeOf(Addr), 0);
   Addr.Family := AF_UNIX;
   if Abstract then
@@ -552,13 +654,16 @@ begin
     raise EDBusUnavailable.Create('FMXWayland: cannot connect to the session bus: ' + SysErrorMessage(errno));
   Uid := UIntToStr(getuid);
   Auth := '';
-  for I := 1 to Length(Uid) do Auth := Auth + IntToHex(Ord(Uid[I]), 2);
+  for I := 1 to Length(Uid) do
+    Auth := Auth + IntToHex(Ord(Uid[I]), 2);
   SendBytes(TEncoding.ASCII.GetBytes(#0 + 'AUTH EXTERNAL ' + Auth + #13#10));
-  if not ReadLine.StartsWith('OK ') then raise EDBusError.Create('Session bus rejected EXTERNAL authentication');
+  if not ReadLine.StartsWith('OK ') then
+    raise EDBusError.Create('Session bus rejected EXTERNAL authentication');
   SendBytes(TEncoding.ASCII.GetBytes('BEGIN'#13#10));
   Reply := Call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'Hello', []);
   try
-    if Reply.Body.Count <> 1 then raise EDBusError.Create('Invalid D-Bus Hello response');
+    if Reply.Body.Count <> 1 then
+      raise EDBusError.Create('Invalid D-Bus Hello response');
     FUniqueName := Reply.Body[0].Text;
   finally
     Reply.Free;
@@ -583,15 +688,20 @@ begin
   while Offset < Length(Data) do
   begin
     N := send(FFd, Data[Offset], Length(Data) - Offset, MsgDontWait or MsgNoSignal);
-    if N > 0 then Inc(Offset, N)
+    if N > 0 then
+      Inc(Offset, N)
     else if (N < 0) and (errno in [EAGAIN, EINTR]) then
     begin
       Pump;
-      if MonotonicMs >= Deadline then raise EDBusTimeout.Create('D-Bus send timeout');
-      Fd.fd := FFd; Fd.events := POLLOUT; Fd.revents := 0;
+      if MonotonicMs >= Deadline then
+        raise EDBusTimeout.Create('D-Bus send timeout');
+      Fd.fd := FFd;
+      Fd.events := POLLOUT;
+      Fd.revents := 0;
       poll(@Fd, 1, 20);
     end
-    else raise EDBusError.Create('D-Bus socket write failed');
+    else
+      raise EDBusError.Create('D-Bus socket write failed');
   end;
 end;
 
@@ -608,18 +718,24 @@ begin
     N := recv(FFd, B, 1, MsgDontWait);
     if N = 1 then
     begin
-      if B = 10 then Exit(Result.TrimRight);
+      if B = 10 then
+        Exit(Result.TrimRight);
       Result := Result + Char(B);
-      if Length(Result) > 4096 then raise EDBusError.Create('Oversized D-Bus authentication response');
+      if Length(Result) > 4096 then
+        raise EDBusError.Create('Oversized D-Bus authentication response');
     end
     else if (N < 0) and (errno in [EAGAIN, EINTR]) then
     begin
       Pump;
-      if MonotonicMs >= Deadline then raise EDBusTimeout.Create('D-Bus authentication timeout');
-      Fd.fd := FFd; Fd.events := POLLIN; Fd.revents := 0;
+      if MonotonicMs >= Deadline then
+        raise EDBusTimeout.Create('D-Bus authentication timeout');
+      Fd.fd := FFd;
+      Fd.events := POLLIN;
+      Fd.revents := 0;
       poll(@Fd, 1, 20);
     end
-    else raise EDBusError.Create('D-Bus authentication socket closed');
+    else
+      raise EDBusError.Create('D-Bus authentication socket closed');
   until False;
 end;
 
@@ -632,7 +748,8 @@ var
   ChildSig: string;
 begin
   Result := nil;
-  if Length(FInput) < 16 then Exit;
+  if Length(FInput) < 16 then
+    Exit;
   if not (FInput[0] in [Ord('l'), Ord('B')]) or (FInput[3] <> 1) then
     raise EDBusError.Create('Invalid D-Bus message header');
   Reader := TWireReader.Create(FInput, FInput[0] = Ord('l'));
@@ -645,8 +762,10 @@ begin
       raise EDBusError.Create('Oversized D-Bus message');
     BodyAt := (16 + HeaderSize + 7) and not 7;
     Total := BodyAt + BodySize;
-    if Total > MaxMessage then raise EDBusError.Create('Oversized D-Bus message');
-    if Length(FInput) < Total then Exit;
+    if Total > MaxMessage then
+      raise EDBusError.Create('Oversized D-Bus message');
+    if Length(FInput) < Total then
+      Exit;
     Frame := Copy(FInput, 0, Total);
     FInput := Copy(FInput, Total, MaxInt);
     Reader.Data := Frame;
@@ -660,24 +779,32 @@ begin
       while Reader.Position < StopAt do
       begin
         Reader.Align(8);
-        if Reader.Position >= StopAt then Break;
+        if Reader.Position >= StopAt then
+          Break;
         Code := Reader.UIntValue(1);
         ChildSig := Reader.Sig;
         Item := Reader.Value(ChildSig);
         try
           case Code of
-            1: Result.Path := Item.Text;
-            2: Result.Intf := Item.Text;
-            3: Result.Member := Item.Text;
-            4: Result.ErrorName := Item.Text;
-            5: Result.ReplySerial := Item.Number;
-            8: Result.Signature := Item.Text;
+            1:
+              Result.Path := Item.Text;
+            2:
+              Result.Intf := Item.Text;
+            3:
+              Result.Member := Item.Text;
+            4:
+              Result.ErrorName := Item.Text;
+            5:
+              Result.ReplySerial := Item.Number;
+            8:
+              Result.Signature := Item.Text;
           end;
         finally
           Item.Free;
         end;
       end;
-      if Reader.Position <> StopAt then raise EDBusError.Create('Invalid D-Bus header size');
+      if Reader.Position <> StopAt then
+        raise EDBusError.Create('Invalid D-Bus header size');
       Reader.Position := BodyAt;
       Index := 1;
       while Index <= Length(Result.Signature) do
@@ -685,7 +812,8 @@ begin
         ChildSig := NextType(Result.Signature, Index);
         Result.Body.Add(Reader.Value(ChildSig));
       end;
-      if Reader.Position <> Total then raise EDBusError.Create('Invalid D-Bus body size');
+      if Reader.Position <> Total then
+        raise EDBusError.Create('Invalid D-Bus body size');
     except
       FreeAndNil(Result);
       raise;
@@ -706,23 +834,29 @@ begin
   Deadline := MonotonicMs + Timeout;
   repeat
     Result := ExtractMessage;
-    if Result <> nil then Exit;
+    if Result <> nil then
+      Exit;
     N := recv(FFd, Buffer[0], SizeOf(Buffer), MsgDontWait);
     if N > 0 then
     begin
       OldSize := Length(FInput);
-      if OldSize + N > MaxMessage then raise EDBusError.Create('D-Bus input limit');
+      if OldSize + N > MaxMessage then
+        raise EDBusError.Create('D-Bus input limit');
       SetLength(FInput, OldSize + N);
       Move(Buffer[0], FInput[OldSize], N);
     end
     else if (N < 0) and (errno in [EAGAIN, EINTR]) then
     begin
-      if MonotonicMs >= Deadline then Exit(nil);
+      if MonotonicMs >= Deadline then
+        Exit(nil);
       Pump;
-      Fd.fd := FFd; Fd.events := POLLIN; Fd.revents := 0;
+      Fd.fd := FFd;
+      Fd.events := POLLIN;
+      Fd.revents := 0;
       poll(@Fd, 1, Min(20, Max(0, Integer(Deadline - MonotonicMs))));
     end
-    else raise EDBusError.Create('Session bus connection closed');
+    else
+      raise EDBusError.Create('Session bus connection closed');
   until False;
 end;
 
@@ -765,7 +899,8 @@ begin
     Field(2, TDBusValue.Str(Intf));
     Field(3, TDBusValue.Str(Member));
     Field(6, TDBusValue.Str(Destination));
-    if BodySig <> '' then Field(8, TDBusValue.Str(BodySig, 'g'));
+    if BodySig <> '' then
+      Field(8, TDBusValue.Str(BodySig, 'g'));
     HeaderBytes := Header.Data;
     Inc(FSerial);
     Serial := FSerial;
@@ -792,12 +927,16 @@ begin
     begin
       if (Reply.Kind in [2, 3]) and (Reply.ReplySerial = Serial) then
       begin
-        if Reply.Kind = 2 then Exit(Reply);
+        if Reply.Kind = 2 then
+          Exit(Reply);
         try
           ErrorText := Reply.ErrorName;
-          if Reply.Body.Count > 0 then ErrorText := ErrorText + ': ' + Reply.Body[0].Text;
+          if Reply.Body.Count > 0 then
+            ErrorText := ErrorText + ': ' + Reply.Body[0].Text;
           raise EDBusError.CreateRemote(Reply.ErrorName, ErrorText);
-        finally Reply.Free; end;
+        finally
+          Reply.Free;
+        end;
       end;
       if Reply.Kind = 4 then
       begin
@@ -808,9 +947,11 @@ begin
         end;
         FSignals.Add(Reply);
       end
-      else Reply.Free;
+      else
+        Reply.Free;
     end;
-    if MonotonicMs >= Deadline then raise EDBusTimeout.Create('D-Bus method timeout: ' + Member);
+    if MonotonicMs >= Deadline then
+      raise EDBusTimeout.Create('D-Bus method timeout: ' + Member);
   until False;
 end;
 
@@ -842,11 +983,15 @@ begin
     Reply := Receive(Min(50, Max(0, Integer(Deadline - MonotonicMs))));
     if Reply <> nil then
     begin
-      if (Reply.Kind = 4) and (Reply.Path = Path) and (Reply.Intf = Intf) and (Reply.Member = Member) then Exit(Reply);
+      if (Reply.Kind = 4) and (Reply.Path = Path) and (Reply.Intf = Intf) and (Reply.Member = Member) then
+        Exit(Reply);
       Reply.Free;
     end;
-    if MonotonicMs >= Deadline then Exit(nil);
+    if MonotonicMs >= Deadline then
+      Exit(nil);
   until False;
 end;
+
+{$ENDREGION}
 
 end.
