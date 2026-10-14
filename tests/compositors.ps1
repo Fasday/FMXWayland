@@ -14,8 +14,14 @@
      with input (tests\wltool.py): clicks, keyboard text and shortcuts, wheel, clipboard both ways with another
      application, the combo box popup (placed where asked, an item clicked), check box, second form, xdg-activation
      of the main form from it, close from the compositor, the client-side title bar's buttons, a modal form (the main
-     form blocked meanwhile), maximize/restore from the program, the compositor and the title bar, resize from code,
-     close of the main form by the compositor and a clean exit.
+     form blocked meanwhile), FMX's own file dialogs (no portal on the program's bus: a double click opens a file, a
+     typed name saves, Escape cancels), maximize/restore from the program, the compositor and the title bar, resize
+     from code, close of the main form by the compositor and a clean exit;
+  3. on sway, KWin and GNOME Shell the portal's file dialog (xdg-desktop-portal with xdg-desktop-portal-gtk, -kde,
+     and -gtk under GNOME Shell: -gnome hands file dialogs to Nautilus, which does not run as root): the request, the
+     dialog as a child of the program's window (xdg-foreign), the program's loop running and its main window ignoring
+     a close meanwhile, a file chosen and a name typed with the keyboard, Escape, a request that another client may not
+     close, the program ending while the dialog is open (its request closed, the dialog gone).
   Compositors: weston (client-side decorations; self-test only: no input injection), sway (server-side title bar),
   sway-csd (sway with "border csd": the program's title bar through xdg-decoration), kwin (nested in a headless sway,
   whose output grim captures: KWin's ScreenShot2 needs OpenGL, which its virtual backend lacks in WSL), kwin-virtual
@@ -24,7 +30,8 @@
 
   Output: <BuildRoot>\shots\compositors\<compositor>-<scale>\ (results.txt, steps.log, the program's logs, PNG
   screenshots, frame dumps) and <BuildRoot>\shots\compositors\summary.md (the matrix). Packages (Ubuntu 26.04):
-  weston sway grim kwin-wayland kwin-common kwin-style-breeze gnome-shell mutter python3-dbus wayland-utils.
+  weston sway grim kwin-wayland kwin-common kwin-style-breeze gnome-shell mutter python3-dbus wayland-utils; for part 3
+  xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-kde xdg-desktop-portal-gnome qt6-wayland.
 
 .EXAMPLE
   .\tests\compositors.ps1
@@ -55,7 +62,7 @@ foreach ($run in $Runs) {
   Write-Host "== $label"
   # Native stderr redirected: error records that must not stop the script.
   $ErrorActionPreference = 'Continue'
-  wsl -d $Distro -u root --exec timeout 700 bash (ConvertTo-WslPath (Join-Path $PSScriptRoot 'compositors.sh')) $comp `
+  wsl -d $Distro -u root --exec timeout 720 bash (ConvertTo-WslPath (Join-Path $PSScriptRoot 'compositors.sh')) $comp `
     $scale (ConvertTo-WslPath $out) (ConvertTo-WslPath $exe) 2>&1 | Out-Null
   $ErrorActionPreference = 'Stop'
   $lines = @(Get-Content (Join-Path $out 'results.txt') -Encoding UTF8 -ErrorAction SilentlyContinue)
