@@ -11,9 +11,8 @@
 /// conversions stay consistent; popups are placed relative to their parent and take the origin the compositor gives
 /// them.</para>
 /// <para>Painting: the paint context handed to FMX (the Ctx of TFmuxPaintCallback, the context handle of the canvas)
-/// is a PWlFrame; FMX's Skia raster canvas renders into an FMUX bitmap (plain memory here) and copies it with
-/// FmuxCanvasDrawBitmap into the frame, a wl_shm buffer that is then attached to the surface. FMX's cairo canvas
-/// (FMX.Canvas.Linux, used when GlobalUseSkia is False) is not supported.</para>
+/// is a Cairo context over a wl_shm frame for FMX.Canvas.Linux. The optional Skia raster canvas receives the
+/// PWlFrame directly and copies its bitmap into it through FmuxCanvasDrawBitmap.</para>
 /// <para>The function list with their status is in README.md; gen-fmux-api.ps1 reads the assignments in
 /// AssignFmuxApi (a "// partial: ..." comment after an assignment marks a function that is only partly done).</para>
 /// </remarks>
@@ -31,7 +30,7 @@ uses
   System.SysUtils, System.Types, System.Classes, System.UITypes, System.Math, System.Messaging,
   System.Generics.Collections, FMX.Types, FMX.Graphics, FMX.Forms, FMX.Controls, FMX.Dialogs, FMX.DialogHelper,
   FMX.Platform, FMX.Platform.Linux, FMUX.Api,
-  FMXWayland.Log, FMXWayland.Platform, FMXWayland.Native;
+  FMXWayland.Log, FMXWayland.Platform, FMXWayland.Native, FMXWayland.Cairo;
 
 type
   /// <summary>An FMX window.</summary>
@@ -44,6 +43,8 @@ type
     FTitlePixels: TArray<Cardinal>;
     FTitleWidth: Integer;
     FTitleHeight: Integer;
+    FPaintPixels: TArray<Byte>;
+    FPaintWidth, FPaintHeight: Integer;
     function Form: TCommonCustomForm;
     function WindowRect: TRectF;
     procedure SetWindowRect(const ARect: TRectF);
@@ -67,15 +68,6 @@ type
     procedure DoScaleChanged; override;
   end;
 
-  /// <summary>An FMUX bitmap: plain memory, premultiplied BGRA, 4 bytes per pixel, no padding.</summary>
-  TFmuxBitmap = record
-    Width: Integer;
-    Height: Integer;
-    Data: Pointer;
-    OwnsData: Boolean;
-  end;
-  PFmuxBitmap = ^TFmuxBitmap;
-
   /// <summary>IFMXWaylandNativeWindow, registered as a platform service.</summary>
   TNativeWindowService = class(TInterfacedObject, IFMXWaylandNativeWindow)
   private
@@ -96,7 +88,6 @@ var
   GClipboardText: string;
   GDumpDir: string;
   GNativeServiceRegistered: Boolean = False;
-  GCanvasChecked: Boolean = False;
 
 {$REGION 'Helpers'}
 
@@ -258,20 +249,42 @@ end;
 procedure TFmuxWindow.DoPaint(const AFrame: PWlFrame; const ADirty: TRectF);
 var
   R: TRectF;
+  Context: Pointer;
 begin
   if not Assigned(FCreate.PaintCallback) then
     Exit;
-  if not GCanvasChecked then
-  begin
-    // (FMX.Skia cannot be used here to set GlobalUseSkia: its canvas service must initialize after FMX.Platform.)
-    GCanvasChecked := True;
-    if (TCanvasManager.DefaultCanvas <> nil) and (TCanvasManager.DefaultCanvas.ClassName = 'TLinuxCanvas') then
-      WlLog(TWlLogLevel.Error, 'FMX''s cairo canvas (FMX.Canvas.Linux) is not supported by FMXWayland and draws ' +
-        'nothing: add FMX.Skia to the uses of the program and set GlobalUseSkia := True before ' +
-        'Application.Initialize.');
-  end;
   R := ADirty;
-  FCreate.PaintCallback(FCreate.Data, AFrame, PRectFArray(@R), 1);
+  if (TCanvasManager.DefaultCanvas <> nil) and (TCanvasManager.DefaultCanvas.ClassName = 'TLinuxCanvas') then
+  begin
+    if AFrame.Bits = nil then
+      Exit;
+    // Tell FMX about the same whole pixels that Wayland will damage. This also includes controls
+    // touching the rounded edge when FMX decides which controls to repaint.
+    R := RectF(Floor(ADirty.Left * AFrame.Scale) / AFrame.Scale,
+      Floor(ADirty.Top * AFrame.Scale) / AFrame.Scale,
+      Ceil(ADirty.Right * AFrame.Scale) / AFrame.Scale,
+      Ceil(ADirty.Bottom * AFrame.Scale) / AFrame.Scale);
+    // Rotating wl_shm buffers can contain older frames; retain the latest pixels outside the dirty region.
+    if (FPaintWidth <> AFrame.Width) or (FPaintHeight <> AFrame.Height) or
+      (Length(FPaintPixels) <> NativeInt(AFrame.Stride) * AFrame.Height) then
+    begin
+      FPaintPixels := nil;
+      SetLength(FPaintPixels, NativeInt(AFrame.Stride) * AFrame.Height);
+      FPaintWidth := AFrame.Width;
+      FPaintHeight := AFrame.Height;
+    end;
+    Move(FPaintPixels[0], AFrame.Bits^, Length(FPaintPixels));
+    Context := CreateCairoFrame(AFrame.Bits, AFrame.Width, AFrame.Height, AFrame.Stride, AFrame.Scale);
+    try
+      FCreate.PaintCallback(FCreate.Data, Context, PRectFArray(@R), 1);
+    finally
+      DestroyCairoFrame(Context);
+    end;
+    Move(AFrame.Bits^, FPaintPixels[0], Length(FPaintPixels));
+    AFrame.Drawn := True;
+  end
+  else
+    FCreate.PaintCallback(FCreate.Data, AFrame, PRectFArray(@R), 1);
   if (GDumpDir <> '') and AFrame.Drawn then
     DumpFrame(AFrame);
 end;
@@ -1044,6 +1057,11 @@ var
   DRow, SRow: PCardinal;
   Op: Cardinal;
 begin
+  if (TCanvasManager.DefaultCanvas <> nil) and (TCanvasManager.DefaultCanvas.ClassName = 'TLinuxCanvas') then
+  begin
+    CairoDrawBitmap(Ctx, Bitmap, Src, Dst, Opacity, HighSpeed);
+    Exit;
+  end;
   F := Ctx;
   B := Bitmap;
   if (F = nil) or (B = nil) or (B.Data = nil) then
@@ -1289,6 +1307,7 @@ begin
   FMUX.Api.FmuxImeEnterControl := WlImeEnterControl; // partial: no-op (text-input-v3 not used yet)
   FMUX.Api.FmuxImeExitControl := WlImeExitControl; // partial: no-op
   FMUX.Api.FmuxImeSetCaretPos := WlImeSetCaretPos; // partial: no-op
+  AssignCairoApi;
 end;
 
 initialization
