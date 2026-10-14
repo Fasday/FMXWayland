@@ -141,6 +141,23 @@ foreach ($run in $Runs) {
       $selfLines += Get-ResultLines (Get-HelloEarlyPopupChecks $elog (Join-Path $out "$n.png") "$($label): --$v" `
         -Activates)
     }
+    if ($comp -eq 'gnome') {
+      # These programs run on the session's bus: GNOME's font-name through the settings portal ("Adwaita Sans 11":
+      # the family fontconfig gives for it, 11 pt = 14.7 device-independent pixels).
+      $gnomeFont = "$(Get-Content (Join-Path $out 'gnome-font-name.txt') -Raw -ErrorAction SilentlyContinue)".Trim()
+      $words = @($gnomeFont -split ' ' | Where-Object { $_ })
+      $pt = 0.0
+      if (($words.Count -gt 1) -and [double]::TryParse($words[-1], [Globalization.NumberStyles]::Float,
+        [Globalization.CultureInfo]::InvariantCulture, [ref]$pt)) {
+        $gnomeFamily = "$(wsl -d $Distro -u root -- timeout 30 fc-match -f '%{family[0]}' ($words[0..($words.Count - 2)] -join ' '))".Trim()
+        $gnomeSize = ($pt * 96 / 72).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture)
+        $elog = "$(Get-Content (Join-Path $out 'early-popup.log') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)"
+        $selfLines += Get-ResultLines (Get-HelloFontChecks $elog "$($label): GNOME's font-name `"$gnomeFont`" through the settings portal" `
+          $gnomeFamily $gnomeSize)
+      } else {
+        $selfLines += "FAIL  $($label): GNOME's font-name read (`"$gnomeFont`")"
+      }
+    }
   }
   if (($Parts -contains 'frame') -and (Test-Path (Join-Path $out 'frame-01-start.png'))) {
     $ok, $detail = Test-HelloOwnTitleBarShot (Join-Path $out 'frame-01-start.png')

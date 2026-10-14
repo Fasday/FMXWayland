@@ -3,8 +3,9 @@ unit DialogCheckMain;
 { The form of tests\DialogCheck: checks of FMXWayland's D-Bus client against a real bus (addresses, the
   authentication, method calls, error replies, timeouts, a dictionary of variants, signals, cancellation by the pump)
   and of the dialog backend (a test backend installed with SetWaylandDialogBackend: what TOpenDialog, TSaveDialog,
-  SelectDirectory, TDialogService and the FMUX functions hand it, and what comes back). One step per timer tick; each
-  writes "dialogcheck: ..." to stdout; tests\dialog-check.ps1 checks them. }
+  SelectDirectory, TDialogService and the FMUX functions hand it, and what comes back) and of the default font
+  (Pango font descriptions, GNOME's font-name through a settings portal). One step per timer tick; each writes
+  "dialogcheck: ..." to stdout; tests\dialog-check.ps1 checks them. }
 
 interface
 
@@ -20,6 +21,7 @@ type
     procedure StepTimer(Sender: TObject);
     procedure CheckBus;
     procedure CheckBackend;
+    procedure CheckFont;
   public
     constructor Create(AOwner: TComponent); override;
   end;
@@ -30,9 +32,9 @@ var
 implementation
 
 uses
-  System.Generics.Collections, Posix.Unistd, FMX.Dialogs, FMX.DialogService.Sync, FMX.DialogService.Async,
-  FMX.Platform, FMUX.Api, FMXWayland.Posix, FMXWayland.DBus, FMXWayland.Portal, FMXWayland.DialogTypes,
-  FMXWayland.Dialogs;
+  System.Generics.Collections, Posix.Unistd, Posix.Stdlib, FMX.Graphics, FMX.Dialogs, FMX.DialogService.Sync,
+  FMX.DialogService.Async, FMX.Platform, FMUX.Api, FMXWayland.Posix, FMXWayland.DBus, FMXWayland.Portal,
+  FMXWayland.DialogTypes, FMXWayland.Dialogs, FMXWayland.SystemFont;
 
 type
   /// <summary>Answers without showing anything and logs what it was asked.</summary>
@@ -129,6 +131,8 @@ begin
         CheckBus;
       2:
         CheckBackend;
+      3:
+        CheckFont;
     else
       begin
         Log('done');
@@ -287,6 +291,79 @@ begin
   except
     on E: EDBusUnavailable do
       Log('bad address: EDBusUnavailable');
+  end;
+end;
+
+procedure TDialogCheckForm.CheckFont;
+const
+  CDescriptions: array[0..5] of string = ('Adwaita Sans 11', 'Cantarell Bold Italic 10.5', 'Noto Sans, Sans 14px',
+    'Ubuntu Sans Medium 11 @wght=500', 'Monospace', '12');
+var
+  S, Family, Bus: string;
+  Size: Single;
+  Ok: Boolean;
+
+  procedure PutEnv(const AName, AValue: string);
+  begin
+    Posix.Stdlib.setenv(MarshaledAString(UTF8String(AName)), MarshaledAString(UTF8String(AValue)), 1);
+  end;
+
+  procedure ReadFontName(const ALabel, AKey: string);
+  var
+    Started: UInt64;
+  begin
+    Started := TThread.GetTickCount64;
+    try
+      Log(Format('settings %s: "%s"', [ALabel, PortalReadSettingString('org.gnome.desktop.interface', AKey, 1500)]));
+    except
+      on E: EPortalUnavailable do
+        Log(Format('settings %s: unavailable (%s) after %d ms', [ALabel, E.RemoteName,
+          TThread.GetTickCount64 - Started]));
+    end;
+  end;
+
+  // A new service (it resolves once) in the desktop ADesktop.
+  procedure Service(const ALabel, ADesktop: string);
+  var
+    Svc: IFMXSystemFontService;
+    Started: UInt64;
+  begin
+    PutEnv('XDG_CURRENT_DESKTOP', ADesktop);
+    Started := TThread.GetTickCount64;
+    Svc := TSystemFontService.Create;
+    Log(Format('font service %s: "%s" %s after %d ms', [ALabel, Svc.GetDefaultFontFamilyName,
+      FormatFloat('0.0', Svc.GetDefaultFontSize, TFormatSettings.Invariant), TThread.GetTickCount64 - Started]));
+  end;
+
+begin
+  for S in CDescriptions do
+  begin
+    Ok := ParseFontDescription(S, Family, Size);
+    Log(Format('font description "%s": %s "%s" %s', [S, BoolToStr(Ok, True), Family,
+      FormatFloat('0.00', Size, TFormatSettings.Invariant)]));
+  end;
+  Bus := GetEnvironmentVariable('DBUS_SESSION_BUS_ADDRESS');
+  try
+    // This bus has no portal: fontconfig's sans-serif at once.
+    ReadFontName('without a portal', 'font-name');
+    Service('GNOME without a portal', 'GNOME');
+    // A portal with ReadOne: GNOME's font (the family fontconfig gives for it, points to pixels); only in GNOME and
+    // not with FMXWAYLAND_PORTAL=0.
+    PutEnv('DBUS_SESSION_BUS_ADDRESS', GetEnvironmentVariable('DC_PORTAL_BUS'));
+    ReadFontName('ReadOne', 'font-name');
+    ReadFontName('missing key', 'no-such-key');
+    Service('GNOME', 'ubuntu:GNOME');
+    Service('KDE', 'KDE');
+    PutEnv('FMXWAYLAND_PORTAL', '0');
+    Service('GNOME with FMXWAYLAND_PORTAL=0', 'GNOME');
+    PutEnv('FMXWAYLAND_PORTAL', '');
+    // An old portal with only Read (a variant in a variant).
+    PutEnv('DBUS_SESSION_BUS_ADDRESS', GetEnvironmentVariable('DC_OLD_PORTAL_BUS'));
+    ReadFontName('Read', 'font-name');
+    Service('GNOME, old portal', 'GNOME');
+  finally
+    PutEnv('DBUS_SESSION_BUS_ADDRESS', Bus);
+    PutEnv('XDG_CURRENT_DESKTOP', '');
   end;
 end;
 

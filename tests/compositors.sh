@@ -170,6 +170,8 @@ case "$COMP" in
     gsettings set org.gnome.shell welcome-dialog-last-shown-version '999'
     gsettings set org.gnome.desktop.notifications show-banners false
     gsettings set org.gnome.mutter experimental-features "['scale-monitor-framebuffer']"
+    # GNOME's interface font: programs on this session's bus get it through the settings portal.
+    gsettings get org.gnome.desktop.interface font-name | tr -d "'" > "$OUT/gnome-font-name.txt"
     # GNOME Shell starts the portal (and with it xdg-desktop-portal-gnome, which needs the display) right away.
     dbus-update-activation-environment WAYLAND_DISPLAY=fmxw-gnome >> "$OUT/steps.log" 2>&1
     # xdg-desktop-portal-gnome hands file dialogs to Nautilus, which refuses to run as root (these tests run as

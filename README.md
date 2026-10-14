@@ -44,7 +44,7 @@ implements what libfmux did:
 | `FMXWayland.Keys` | XKB keysyms / evdev codes -> FMX virtual keys |
 | `FMXWayland.Native` | `IFMXWaylandNativeWindow`, the contract for GPU canvases (below) |
 | `FMXWayland.Frame` | `IFMXWaylandWindowFrame`, the contract for programs that draw their own title bar (below) |
-| `FMXWayland.SystemFont` | FMX's `IFMXSystemFontService`: the default font of `TFont` (fontconfig's `sans-serif`) |
+| `FMXWayland.SystemFont` | FMX's `IFMXSystemFontService`: the default font of `TFont` (GNOME's `font-name` through the settings portal, else fontconfig's `sans-serif`) |
 
 **Painting.** Both of FMX's Linux canvases work; the frames go to the compositor as wl_shm buffers, attached with the
 damaged rectangle and committed; frame callbacks pace the repaints.
@@ -77,11 +77,16 @@ title bar ([IFMXWaylandWindowFrame](#ifmxwaylandwindowframe-for-programs-with-th
 title starts the compositor's interactive move only when the pointer is dragged past 4 pixels (as GTK does), so a
 click or a double click stays the window's.
 
-**Fonts.** FMX's default font (`TFont`, every control whose style names no family) is the desktop's sans-serif font
-as fontconfig resolves it (`IFMXSystemFontService`; without it FMX falls back to "Tahoma", which Linux systems do not
-have: Skia then fell back to "Ubuntu", Pango to fontconfig's default), at FMX's default size of 12
-device-independent pixels (libfmux registers no such service: FMX used 12 there too). `FMXWAYLAND_FONT="family[,size]"`
-overrides it.
+**Fonts.** FMX's default font (`TFont`, every control whose style names no family) is the desktop's
+(`IFMXSystemFontService`; without it FMX falls back to "Tahoma", which Linux systems do not have: Skia then fell back
+to "Ubuntu", Pango to fontconfig's default). In a GNOME session (`XDG_CURRENT_DESKTOP` lists GNOME) it is GNOME's
+interface font, `org.gnome.desktop.interface font-name` ("Adwaita Sans 11"), read through the settings portal
+(`org.freedesktop.portal.Settings`, `ReadOne` or the older `Read`, over the D-Bus client of the dialogs): the family
+as fontconfig resolves it (a substitute when that family is not installed), the size converted from points to FMX's
+device-independent pixels (11 pt = 14.7, as Windows reports its 9 pt message font as 12). Elsewhere, without a
+portal (it is given 1.5 seconds) or with `FMXWAYLAND_PORTAL=0`, it is the desktop's sans-serif font as fontconfig
+resolves it at FMX's default size of 12 (libfmux registers no such service: FMX used 12 there too).
+`FMXWAYLAND_FONT="family[,size]"` overrides both.
 
 ## Dialogs
 
@@ -210,7 +215,7 @@ unset DISPLAY
 Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not implemented" notes (default), 2 debug,
 3 input traces; `FMXWAYLAND_DUMP_DIR=<dir>` writes the latest frame of each window as a BMP (debugging);
 `FMXWAYLAND_CSD=0` no client-side decorations; `FMXWAYLAND_APP_ID` the xdg app id (default: the program name);
-`FMXWAYLAND_PORTAL=0` FMX's own file dialogs instead of the portal's;
+`FMXWAYLAND_PORTAL=0` FMX's own file dialogs instead of the portal's (and no settings portal for the font);
 `FMXWAYLAND_FONT="family[,size]"` FMX's default font (size in device-independent pixels); `XCURSOR_THEME`,
 `XCURSOR_SIZE` for cursor themes.
 
@@ -244,7 +249,9 @@ Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not imp
   error reply's name; a timeout; a subscribed signal; a pump that cancels; no portal: unavailable after 1 ms) and the
   dialog backend with a test backend (what `TOpenDialog`, `TSaveDialog`, `SelectDirectory`, `TDialogService` and
   the FMUX dialog functions hand it and get back; 20 of 30 long names fit into FMX's buffer; `nil` restores FMX's
-  dialog services).
+  dialog services) and the default font (Pango font descriptions; GNOME's `font-name` through a settings portal on
+  two more private buses, `tests\settings-portal.py`: `ReadOne`, and an old portal with only `Read`; asked only in a
+  GNOME session and not with `FMXWAYLAND_PORTAL=0`; a missing key; no portal: fontconfig at once).
 - `tests\glibc-compat.ps1` — the glibc symbol versions Hello and `libsk4d.so` need (`objdump -T`, at most 2.35),
   then Hello's self-test on the headless Weston of other distributions in Docker containers (no screen, no GPU;
   images with the run-time libraries, built once as `fmxwayland-compat:<image>`): `ubuntu:22.04` (glibc 2.35,
@@ -259,8 +266,9 @@ Evidence of the last runs: all checks of the first two passed (WSLg on Windows 1
 headless), and all of `glibc-compat.ps1` with the program linked against the Ubuntu 22.04 SDK (2026-10-14);
 `Hello --selftest` also runs to the end on WSLg (its seat appears only after the RDP client connects, a second or so
 after the program starts: the clipboard falls back to a process-local one until then). With the dialogs and the
-window frame service merged: `weston-headless.ps1` passed on both canvases (153 checks each: Skia, cairo); the
-end-to-end test on WSLg was not run again (it takes the Windows desktop).
+window frame service merged and GNOME's font: `weston-headless.ps1` passed on both canvases (153 checks each: Skia,
+cairo), `dialog-check.ps1` 36, `canvas-check.ps1` 36, `glibc-compat.ps1` 74 (Ubuntu 22.04, Debian 12, Fedora 44);
+the end-to-end test on WSLg was not run again (it takes the Windows desktop).
 
 | | |
 |---|---|
@@ -308,7 +316,9 @@ its log, the compositor's view of the windows and screenshots:
    its place, minimize and the compositor showing the window again, the close button;
 4. popups opened before their window is mapped (`Hello --early-popup`, `=paint`, `=create`): an xdg_popup of the
    main window once that is mapped, not dismissed, both on the screen (pixels of the screenshot; on compositors that
-   activate the new window FMX closes the popup again, see [What does not work](#what-does-not-work-yet));
+   activate the new window FMX closes the popup again, see [What does not work](#what-does-not-work-yet)); on GNOME
+   Shell these programs run on the session's bus, and their default font must be GNOME's `font-name` read through
+   the settings portal;
 5. on sway, KWin and GNOME Shell the **portal's file dialog**: xdg-desktop-portal started by D-Bus activation in the
    run's session with the compositor's backend (sway: xdg-desktop-portal-gtk; KWin: -kde; GNOME Shell: -gtk, since
    xdg-desktop-portal-gnome hands file dialogs to Nautilus, which does not run as root): the request, the program's
@@ -348,21 +358,19 @@ portal`.
 | Resize from code | — | pass | pass | pass | pass |
 | Close by the compositor, clean exit | — | pass | pass | pass | pass |
 | Default font (fontconfig's sans-serif) | pass | pass | pass | pass | pass |
+| Default font in GNOME: `font-name` through the settings portal ("Adwaita Sans 11": fontconfig's family, 14.7) | — | — | — | — | pass |
 | Popups opened before the window is mapped (`--early-popup`, `=paint`, `=create`) | pass, both on the screen | pass (FMX closes them at the activation) | pass (likewise) | pass (likewise) | pass (likewise) |
 | Own title bar, self-test: no decorations, listener, maximize, decorations on and off | pass | pass (maximize n/a) | pass (maximize n/a) | pass | pass |
 | Own title bar with input: move, resize, activation, popup, close button | — | pass | pass | pass | pass |
 | Own title bar: maximize/restore by button and double click, back to size and place | — | n/a | n/a | pass | pass |
 | Own title bar: the compositor's window menu, minimize | — | n/a | n/a | pass | pass |
 
-Last runs (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK), 14 runs each
-(Weston 1, 2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2, 1.5),
-before the dialogs and the window frame service were merged: with the dialogs, 946 checks passed, 26 not applicable
-(maximize on sway; a click on the program's window under the portal's dialog, which covers it), none failed; with
-the window frame service, 1366 passed, 40 not applicable (maximize, minimize and the window menu on sway), 2 failed
-(both sway `border csd` runs read the client size while sway was still giving it back after the decorations went
-again; the check now takes any size there, as for sway and KWin), then sway 1, KWin 1, GNOME Shell 1 and 1.5 after
-the fix of `SetDecorated` before the first show: 482 passed, 8 not applicable, none failed. KWin's `--virtual`
-backend renders with QPainter, and its
+Last run (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK, with the dialogs and
+the window frame service merged and GNOME's font through the settings portal): 14 runs (Weston 1, 2; sway 1, 2, 1.5;
+sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2, 1.5) with all parts, 1751 checks
+passed, 51 not applicable (maximize, minimize and the window menu on sway; on each run with the portal a click on the
+program's window under the portal's dialog, which covers it), none failed (31 minutes). The branches had run 946
+(dialogs) and 1366 (window frame) checks before. KWin's `--virtual` backend renders with QPainter, and its
 screenshot interface (`org.kde.KWin.ScreenShot2`) needs OpenGL, which WSL cannot give it (no DRM render node): the
 test runs KWin nested in a headless sway (KWin's Wayland backend, its window fullscreen there; KWin takes the host
 output's scale), and KWin `--virtual` for the self-test alone. GNOME Shell runs with a test extension
@@ -556,7 +564,7 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
 | IME | FmuxImeEnterControl/ExitControl/SetCaretPos (no-ops: characters come from xkbcommon) | partial |
 | Tooltips, gestures | FmuxAddTooltip/RemoveTooltip, FmuxAdd/RemoveGestureRecognizer (no-ops) | partial |
 | OpenGL contexts, PDF canvas | FmuxCreateSharedContext, FmuxCreateThreadContext, FmuxMakeCurrentContext, FmuxFlushBuffer, FmuxCreatePDFContext... | stub |
-| Fonts | FmuxGetFontCount, FmuxGetFontName (the system's families); FmuxAddCustomFont, FmuxAddCustomFontFromData; FMX's IFMXSystemFontService (default family: fontconfig's sans-serif) | partial / stub; service implemented |
+| Fonts | FmuxGetFontCount, FmuxGetFontName (the system's families); FmuxAddCustomFont, FmuxAddCustomFontFromData; FMX's IFMXSystemFontService (default font: GNOME's font-name through the settings portal, else fontconfig's sans-serif) | partial / stub; service implemented |
 | Main menu (native menu bar) | FmuxCreateMainMenu, FmuxCreateMenu, FmuxCreateMenuItem, FmuxMenuAddItem, FmuxSetSubmenu, FmuxUpdateMenuItem | stub (no menu bar shown) |
 | Printing, PDF | FmuxEnumPrinters ... FmuxSetAlwaysAskOutputFile | stub |
 | Web view, media, video capture | FmuxCreateWebView..., FmuxCreateMedia..., FmuxCaptureDeviceEnum... | stub |
@@ -590,9 +598,9 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
   resizes); no window geometry insets for shadows and invisible resize borders outside the window (a later interface).
   A move starts on the drag, not at the press (see the table): a program that waits for the compositor's grab at the
   press itself sees it a few pixels later.
-- The default font's size is FMX's 12 device-independent pixels, not the desktop's (fontconfig's match carries none;
-  TODO: GNOME's `org.gnome.desktop.interface font-name` through the settings portal once FMXWayland has a D-Bus
-  client).
+- The default font follows the desktop's only in GNOME (its `font-name`, read once at start: a change later is not
+  followed; `text-scaling-factor` is not applied). Elsewhere (KDE, sway, ...) the size is FMX's 12
+  device-independent pixels, not the desktop's (fontconfig's match carries none).
 - A popup opened before its window is on the screen (from a timer, `FormCreate`) waits for the window; compositors
   that activate the new window then (sway, KWin, GNOME Shell) make FMX close it again: FMX closes the popups of a form
   whenever its activation changes (FMX.Platform.Linux, as with libfmux).
@@ -609,7 +617,7 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
 3. **Decorations**: polish the client-side ones (shadows, theme colors, `prefers-color-scheme` through the portal).
    xdg-decoration where offered, the tests on KWin, sway and GNOME Shell and `IFMXWaylandWindowFrame` for programs
    with their own title bar are done; next for it: window geometry insets (shadows, resize borders outside the
-   window), the desktop's dark/light preference and its font (settings portal).
+   window), the desktop's dark/light preference (settings portal; GNOME's font is read through it already).
 4. **Drag and drop** over wl_data_device (FMX's Drag callback, FmuxBeginDragDrop), clipboard images and custom
    formats, primary selection.
 5. `FmuxOpenUrl`/`FmuxOpenFile` through the OpenURI portal (the D-Bus client is there) or `xdg-open`; the dark style

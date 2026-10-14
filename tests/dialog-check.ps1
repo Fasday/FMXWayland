@@ -11,7 +11,10 @@
   the bus (unavailable at once). Dialog backend: a test backend installed with SetWaylandDialogBackend gets what
   TOpenDialog (filters, filter index, multiple), TSaveDialog (overwrite prompt), SelectDirectory, TDialogService (sync
   and async message, input query) and FmuxMessageDialog/FmuxInputQuery hand it; what fits into FMX's buffer of 1024
-  characters arrives; nil restores FMX's own dialog services.
+  characters arrives; nil restores FMX's own dialog services. Default font: Pango font descriptions; the settings
+  portal (tests\settings-portal.py on two more buses: ReadOne, and an old portal with only Read) read for GNOME's
+  font-name in a GNOME session only (not in KDE, not with FMXWAYLAND_PORTAL=0), a missing key, no portal (fontconfig
+  at once).
 
 .EXAMPLE
   .\tests\dialog-check.ps1
@@ -35,6 +38,10 @@ if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 wsl -d $Distro -u root -- timeout 150 sh (ConvertTo-WslPath (Join-Path $PSScriptRoot 'dialog-check.sh')) `
   (ConvertTo-WslPath $out) (ConvertTo-WslPath $exe) 2>&1 | Out-Null
 $log = Get-Content (Join-Path $out 'program.log') -Raw -Encoding UTF8
+# What the settings portals were asked; the desktop's sans-serif family as fontconfig resolves it.
+$calls = @(Get-Content (Join-Path $out 'portal-calls.log') -Encoding UTF8 -ErrorAction SilentlyContinue)
+$oldCalls = @(Get-Content (Join-Path $out 'old-portal-calls.log') -Encoding UTF8 -ErrorAction SilentlyContinue)
+$family = "$(wsl -d $Distro -u root -- timeout 30 fc-match -f '%{family[0]}' sans-serif)".Trim()
 $checks = [ordered]@{
   'bus: address list (a missing socket, then an abstract one with guid=)' =
     $log -match 'dialogcheck: connected through "unix:path=[^;]+;unix:abstract=[^"]+" as :1\.\d+'
@@ -74,6 +81,31 @@ $checks = [ordered]@{
   'backend: FmuxMessageDialog' = $log -match 'FmuxMessageDialog result 6'
   'backend: FmuxInputQuery' = $log -match 'FmuxInputQuery True: XYZ'
   "backend: nil restores FMX's dialog services" = $log -match 'service without it: TFMXDialogService'
+  'font: Pango descriptions (family, points to pixels, px, style words, variations, a list)' =
+    ($log -match 'font description "Adwaita Sans 11": True "Adwaita Sans" 14\.67') -and
+    ($log -match 'font description "Cantarell Bold Italic 10\.5": True "Cantarell" 14\.00') -and
+    ($log -match 'font description "Noto Sans, Sans 14px": True "Noto Sans" 14\.00') -and
+    ($log -match 'font description "Ubuntu Sans Medium 11 @wght=500": True "Ubuntu Sans" 14\.67') -and
+    ($log -match 'font description "Monospace": True "Monospace" 0\.00') -and
+    ($log -match 'font description "12": False ""')
+  'font: settings without a portal: unavailable at once' =
+    $log -match 'settings without a portal: unavailable \(org\.freedesktop\.DBus\.Error\.ServiceUnknown\) after \d{1,3} ms'
+  "font: GNOME without a portal: fontconfig's sans-serif at 12, at once" =
+    $log -match "font service GNOME without a portal: `"$([regex]::Escape($family))`" 12\.0 after \d{1,3} ms"
+  'font: settings portal ReadOne' = $log -match 'settings ReadOne: "DejaVu Serif Bold 10\.5"'
+  'font: settings portal, a missing key: NotFound' =
+    $log -match 'settings missing key: unavailable \(org\.freedesktop\.portal\.Error\.NotFound\)'
+  "font: GNOME (ubuntu:GNOME): GNOME's font-name, 10.5 pt = 14 px" =
+    $log -match 'font service GNOME: "DejaVu Serif" 14\.0'
+  "font: KDE: fontconfig's sans-serif, the portal not asked" =
+    ($log -match "font service KDE: `"$([regex]::Escape($family))`" 12\.0") -and
+    (@($calls | Select-String 'ReadOne org\.gnome\.desktop\.interface font-name').Count -eq 2)
+  "font: FMXWAYLAND_PORTAL=0: fontconfig's sans-serif" =
+    $log -match "font service GNOME with FMXWAYLAND_PORTAL=0: `"$([regex]::Escape($family))`" 12\.0"
+  'font: an old portal (Read, a variant in a variant)' =
+    ($log -match 'settings Read: "DejaVu Serif Bold 10\.5"') -and
+    ($log -match 'font service GNOME, old portal: "DejaVu Serif" 14\.0') -and
+    (@($oldCalls | Select-String '^Read org\.gnome\.desktop\.interface font-name').Count -eq 2)
   'no step raised' = $log -notmatch 'raised'
   'clean exit' = ($log -match 'dialogcheck: done') -and ($log -match 'exit=0')
 }

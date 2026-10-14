@@ -31,6 +31,10 @@ function PortalFileDialog(const Request: TWaylandFileDialogRequest; const Parent
   out Files: TArray<string>; var FilterIndex: Integer; const Pump: TDBusPump): Boolean;
 /// <summary>The version of the portal's FileChooser interface; raises EPortalUnavailable without one.</summary>
 function PortalFileChooserVersion: Cardinal;
+/// <summary>A string setting of the portal (org.freedesktop.portal.Settings: ReadOne, or Read of portals before
+/// version 2 of the interface) on a connection of its own, without a pump: waits up to TimeoutMs for the answer.
+/// Raises EPortalUnavailable without a session bus, a portal, the setting, or an answer in time.</summary>
+function PortalReadSettingString(const Namespace, Key: string; TimeoutMs: Integer): string;
 
 implementation
 
@@ -42,6 +46,7 @@ const
   PortalPath = '/org/freedesktop/portal/desktop';
   FileChooserInterface = 'org.freedesktop.portal.FileChooser';
   RequestInterface = 'org.freedesktop.portal.Request';
+  SettingsInterface = 'org.freedesktop.portal.Settings';
   /// <summary>Milliseconds for the portal's method replies: the first call may start (D-Bus activate) it.</summary>
   CallTimeoutMs = 5000;
   /// <summary>Milliseconds without an answer after which the request object is checked.</summary>
@@ -86,6 +91,63 @@ begin
       Bus.Free;
     end;
   except
+    on E: EDBusError do
+      raise EPortalUnavailable.CreateRemote(E.RemoteName, E.Message);
+  end;
+end;
+
+function ReadSetting(Bus: TDBusConnection; const Method, Namespace, Key: string; TimeoutMs: Integer): TDBusMessage;
+var
+  NamespaceArg, KeyArg: TDBusValue;
+begin
+  NamespaceArg := TDBusValue.Str(Namespace);
+  KeyArg := TDBusValue.Str(Key);
+  try
+    Result := Bus.Call(PortalDestination, PortalPath, SettingsInterface, Method, [NamespaceArg, KeyArg], TimeoutMs);
+  finally
+    NamespaceArg.Free;
+    KeyArg.Free;
+  end;
+end;
+
+function PortalReadSettingString(const Namespace, Key: string; TimeoutMs: Integer): string;
+var
+  Bus: TDBusConnection;
+  Reply: TDBusMessage;
+  Value: TDBusValue;
+begin
+  try
+    Bus := TDBusConnection.Create;
+    try
+      try
+        Reply := ReadSetting(Bus, 'ReadOne', Namespace, Key, TimeoutMs);
+      except
+        on E: EDBusError do
+        begin
+          if E.RemoteName <> 'org.freedesktop.DBus.Error.UnknownMethod' then
+            raise;
+          Reply := ReadSetting(Bus, 'Read', Namespace, Key, TimeoutMs);
+        end;
+      end;
+      try
+        if Reply.Body.Count <> 1 then
+          raise EDBusError.Create('Invalid Settings reply');
+        // ReadOne answers a variant, Read a variant in a variant.
+        Value := Reply.Body[0];
+        while (Value.Signature = 'v') and (Value.Children.Count = 1) do
+          Value := Value.Children[0];
+        if Value.Signature <> 's' then
+          raise EDBusError.CreateFmt('%s %s is not a string (%s)', [Namespace, Key, Value.Signature]);
+        Result := Value.Text;
+      finally
+        Reply.Free;
+      end;
+    finally
+      Bus.Free;
+    end;
+  except
+    on E: EPortalUnavailable do
+      raise;
     on E: EDBusError do
       raise EPortalUnavailable.CreateRemote(E.RemoteName, E.Message);
   end;
