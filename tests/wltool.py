@@ -19,14 +19,18 @@ the compositor itself, or the one hosting a nested KWin), SWAYSOCK, KWIN_LOG (KW
 ("<w> <h>": the logical size of the output, for absolute pointer motion on wlroots).
 
 Commands (coordinates in logical pixels of the layout):
-  move X Y | down [left|right|middle] | up [..] | click [..] | wheel N (notches, + = towards the user)
+  move X Y | down [left|right|middle] | up [..] | click [..] | dclick [..] (double click)
+  wheel N (notches, + = towards the user)
   key NAME[+NAME...] (ctrl+a, backspace, home, alt+f4, ...) | type TEXT (US layout: a-z A-Z 0-9 space .,-/=)
   copy TEXT | paste                     the clipboard as another application
   geometry TITLE                        "x y w h" of the window's geometry (with client-side decorations if any)
+  frame TITLE                           "x y w h" of the window with the compositor's decorations (title bar)
   focus                                 title of the focused window
   parent TITLE                          title of the window TITLE is transient for ('' if none)
   windows                               the titles of all windows, separated by '|'
   close TITLE | maximize TITLE | restore TITLE
+  minimized TITLE                       1 when the compositor shows the window minimized, else 0
+  unminimize TITLE                      shows a minimized window again (and activates it)
   shot FILE                             a PNG of the output
   settle                                waits until the shell takes no input itself (GNOME: overview, modal grabs)
   caps | quit
@@ -473,6 +477,10 @@ class Gnome:
             raise RuntimeError('no window "%s"' % title)
         return r
 
+    def frame(self, title):
+        # No server-side decorations for Wayland clients in GNOME Shell: the frame rectangle is the geometry.
+        return self.geometry(title)
+
     def focus(self):
         return self.eval('const w = global.display.focus_window; w ? w.get_title() : ""')
 
@@ -482,6 +490,13 @@ class Gnome:
 
     def windows(self):
         return '|'.join(self.eval('global.get_window_actors().map(a => a.meta_window.get_title() || "")'))
+
+    def minimized(self, title):
+        return '1' if self.eval('%s.minimized' % (self.WIN % json.dumps(title))) else '0'
+
+    def unminimize(self, title):
+        self.eval('const w = %s; w.unminimize(); w.activate(global.get_current_time()); "ok"'
+                  % (self.WIN % json.dumps(title)))
 
     def close(self, title):
         self.eval('%s.delete(global.get_current_time()); "ok"' % (self.WIN % json.dumps(title)))
@@ -498,6 +513,13 @@ class Gnome:
             raise RuntimeError('Screenshot failed')
         self.settle()
         return name
+
+    def state(self):
+        """What the shell is doing (diagnostics)."""
+        return self.eval('JSON.stringify({startingUp: Main.layoutManager._startingUp, overview: Main.overview.visible, '
+                         'modal: Main.modalCount, actionMode: Main.actionMode, focus: global.display.focus_window ? '
+                         'global.display.focus_window.get_title() : null, grab: global.stage.get_grab_actor() ? '
+                         'global.stage.get_grab_actor().toString() : null})')
 
     def settle(self):
         """Waits until the shell takes no input itself (no overview, no modal grab)."""
@@ -537,6 +559,11 @@ class Sway:
         r, w = v['rect'], v['window_rect']
         return '%d %d %d %d' % (r['x'] + w['x'], r['y'] + w['y'], w['width'], w['height'])
 
+    def frame(self, title):
+        # The container: the window with sway's title bar and borders.
+        r = self.view(title)['rect']
+        return '%d %d %d %d' % (r['x'], r['y'], r['width'], r['height'])
+
     def focus(self):
         for v in self.views():
             if v.get('focused'):
@@ -549,6 +576,12 @@ class Sway:
 
     def windows(self):
         return '|'.join(v.get('name') or '' for v in self.views())
+
+    def minimized(self, title):
+        raise RuntimeError('sway does not minimize')
+
+    def unminimize(self, title):
+        raise RuntimeError('sway does not minimize')
 
     def close(self, title):
         self.msg('[con_id=%d]' % self.view(title)['id'], 'kill')
@@ -605,6 +638,13 @@ class KWin:
             raise RuntimeError('no window "%s"' % title)
         return r
 
+    def frame(self, title):
+        r = self.script(self.WIN % json.dumps(title) + 'if (!w) out("none"); else { const g = w.frameGeometry; '
+                        'out([g.x, g.y, g.width, g.height].join(" ")); }')
+        if r == 'none':
+            raise RuntimeError('no window "%s"' % title)
+        return r
+
     def focus(self):
         return self.script('const w = workspace.activeWindow; out(w ? w.caption : "");')
 
@@ -617,6 +657,12 @@ class KWin:
 
     def windows(self):
         return self.script('out(workspace.windowList().map(w => w.caption).join("|"));')
+
+    def minimized(self, title):
+        return self.script(self.WIN % json.dumps(title) + 'out(w.minimized ? "1" : "0");')
+
+    def unminimize(self, title):
+        self.script(self.WIN % json.dumps(title) + 'w.minimized = false; workspace.activeWindow = w; out("ok");')
 
     def close(self, title):
         self.script(self.WIN % json.dumps(title) + 'w.closeWindow(); out("ok");')
@@ -647,11 +693,16 @@ def run(inp, wm, line):
         inp.move(float(a[0]), float(a[1]))
     elif cmd in ('down', 'up'):
         inp.button(a[0] if a else 'left', cmd == 'down')
-    elif cmd == 'click':
-        inp.button(a[0] if a else 'left', True)
-        inp.sync()
-        time.sleep(0.05)
-        inp.button(a[0] if a else 'left', False)
+    elif cmd in ('click', 'dclick'):
+        # dclick: two clicks well within a double click's time.
+        for n in range(2 if cmd == 'dclick' else 1):
+            if n:
+                inp.sync()
+                time.sleep(0.08)
+            inp.button(a[0] if a else 'left', True)
+            inp.sync()
+            time.sleep(0.04)
+            inp.button(a[0] if a else 'left', False)
     elif cmd == 'wheel':
         inp.wheel(int(a[0]))
     elif cmd == 'key':
@@ -677,6 +728,12 @@ def run(inp, wm, line):
         result = inp.paste()
     elif cmd == 'geometry':
         result = wm.geometry(arg)
+    elif cmd == 'frame':
+        result = wm.frame(arg)
+    elif cmd == 'minimized':
+        result = wm.minimized(arg)
+    elif cmd == 'unminimize':
+        wm.unminimize(arg)
     elif cmd == 'focus':
         result = wm.focus()
     elif cmd == 'parent':
@@ -693,6 +750,8 @@ def run(inp, wm, line):
         result = inp.caps()
     elif cmd == 'settle':
         result = wm.settle() if hasattr(wm, 'settle') else 'settled'
+    elif cmd == 'state' and hasattr(wm, 'state'):
+        result = wm.state()
     else:
         raise RuntimeError('unknown command ' + cmd)
     inp.sync()

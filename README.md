@@ -10,7 +10,9 @@ Pango, as with libfmux) or, optionally, with its Skia canvas.
 Phase 1 (this state): an FMX program with the usual controls runs on WSLg, Weston, sway, KWin and GNOME Shell —
 windows, popups, mouse, keyboard, clipboard, timers, modal forms, message boxes, file dialogs (the desktop's through
 xdg-desktop-portal, FMX's own without one), HiDPI scale (integer and fractional), xdg-activation, server-side or
-client-side decorations, on both of FMX's Linux canvases (cairo/Pango and Skia). See [Dialogs](#dialogs),
+client-side decorations or a title bar drawn by the program itself
+([IFMXWaylandWindowFrame](#ifmxwaylandwindowframe-for-programs-with-their-own-title-bar)), the desktop's font as
+FMX's default, on both of FMX's Linux canvases (cairo/Pango and Skia). See [Dialogs](#dialogs),
 [Compositors](#compositors), [Status](#status) and [What does not work](#what-does-not-work-yet).
 
 ## How it works
@@ -41,6 +43,8 @@ implements what libfmux did:
 | `src\Protocols\FMXWayland.Protocol.*` | Generated from the protocol XML files in `protocols\` by `tools\gen-wayland.ps1`, a small wayland-scanner for Pascal |
 | `FMXWayland.Keys` | XKB keysyms / evdev codes -> FMX virtual keys |
 | `FMXWayland.Native` | `IFMXWaylandNativeWindow`, the contract for GPU canvases (below) |
+| `FMXWayland.Frame` | `IFMXWaylandWindowFrame`, the contract for programs that draw their own title bar (below) |
+| `FMXWayland.SystemFont` | FMX's `IFMXSystemFontService`: the default font of `TFont` (fontconfig's `sans-serif`) |
 
 **Painting.** Both of FMX's Linux canvases work; the frames go to the compositor as wl_shm buffers, attached with the
 damaged rectangle and committed; frame callbacks pace the repaints.
@@ -68,7 +72,16 @@ compositor gives them.
 client-side decorations: a subsurface around the window with the title (rendered by FMX's canvas), minimize/maximize/
 close buttons (those the window manager offers in `xdg_toplevel.wm_capabilities`: sway has neither maximize nor
 minimize), moving, resizing at the edges and the window menu. FMX's form rectangle includes them, like a frame on
-other platforms. `FMXWAYLAND_CSD=0` turns them off.
+other platforms. `FMXWAYLAND_CSD=0` turns them off; a program can turn off both kinds for a window and draw its own
+title bar ([IFMXWaylandWindowFrame](#ifmxwaylandwindowframe-for-programs-with-their-own-title-bar)). A press on the
+title starts the compositor's interactive move only when the pointer is dragged past 4 pixels (as GTK does), so a
+click or a double click stays the window's.
+
+**Fonts.** FMX's default font (`TFont`, every control whose style names no family) is the desktop's sans-serif font
+as fontconfig resolves it (`IFMXSystemFontService`; without it FMX falls back to "Tahoma", which Linux systems do not
+have: Skia then fell back to "Ubuntu", Pango to fontconfig's default), at FMX's default size of 12
+device-independent pixels (libfmux registers no such service: FMX used 12 there too). `FMXWAYLAND_FONT="family[,size]"`
+overrides it.
 
 ## Dialogs
 
@@ -197,8 +210,9 @@ unset DISPLAY
 Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not implemented" notes (default), 2 debug,
 3 input traces; `FMXWAYLAND_DUMP_DIR=<dir>` writes the latest frame of each window as a BMP (debugging);
 `FMXWAYLAND_CSD=0` no client-side decorations; `FMXWAYLAND_APP_ID` the xdg app id (default: the program name);
-`FMXWAYLAND_PORTAL=0` FMX's own file dialogs instead of the portal's; `XCURSOR_THEME`, `XCURSOR_SIZE` for cursor
-themes.
+`FMXWAYLAND_PORTAL=0` FMX's own file dialogs instead of the portal's;
+`FMXWAYLAND_FONT="family[,size]"` FMX's default font (size in device-independent pixels); `XCURSOR_THEME`,
+`XCURSOR_SIZE` for cursor themes.
 
 ## Tests
 
@@ -213,8 +227,12 @@ themes.
   2 (buffer size through `IFMXWaylandNativeWindow`, the self-test steps up to a message box answered by a timer, file
   dialogs without a session bus — FMX's own, driven by timers: the folder listed through the filter without hidden
   files, two files of a multiple selection, save over an existing file with another filter and the overwrite
-  question, a folder, cancel —, the program's frame dumps, a compositor screenshot, clean exit). `-BuildRoot <root of
-  a NOSKIA build> -Canvas TLinuxCanvas` runs it on FMX's default canvas.
+  question, a folder, cancel —, the program's frame dumps, a compositor screenshot, clean exit), the default font
+  (fontconfig's family at 12; `FMXWAYLAND_FONT` with a serif family: the canvas measures the default text in it),
+  popups opened before their window is mapped (`Hello --early-popup`, `=paint`, `=create`: the drop-down and the
+  window must both be on the screen, counted in the screenshot's pixels) and `Hello --own-titlebar --selftest` (the
+  window frame service without input, no FMXWayland title bar in the screenshot). `-BuildRoot <root of a NOSKIA
+  build> -Canvas TLinuxCanvas` runs it on FMX's default canvas.
 - `tests\canvas-check.ps1` — builds `tests\CanvasCheck` for both canvases and runs them on headless Weston at scale 1
   and 2: the same drawing (gradients, opacity, dashes and caps, bitmap brushes, scaled and partial bitmaps, the PNG
   codec, text beyond the BMP, wrapping, alignment, trimming, styles, rotation, text as a path, a degenerate matrix),
@@ -240,9 +258,9 @@ themes.
 Evidence of the last runs: all checks of the first two passed (WSLg on Windows 11 with Ubuntu 26.04, Weston 14.0.2
 headless), and all of `glibc-compat.ps1` with the program linked against the Ubuntu 22.04 SDK (2026-10-14);
 `Hello --selftest` also runs to the end on WSLg (its seat appears only after the RDP client connects, a second or so
-after the program starts: the clipboard falls back to a process-local one until then). With the dialogs:
-`weston-headless.ps1` passed on both canvases (46 and 48 checks: Skia, cairo), `dialog-check.ps1` passed (27 checks);
-the end-to-end test on WSLg was not run again (it takes the Windows desktop).
+after the program starts: the clipboard falls back to a process-local one until then). With the dialogs and the
+window frame service merged: `weston-headless.ps1` passed on both canvases (153 checks each: Skia, cairo); the
+end-to-end test on WSLg was not run again (it takes the Windows desktop).
 
 | | |
 |---|---|
@@ -280,7 +298,18 @@ its log, the compositor's view of the windows and screenshots:
    dialogs (the program's session bus has no portal: a double click opens a file, a typed name saves, Escape
    cancels), maximize/restore from the program, from the compositor and from the program's title bar, resize from code
    (the compositor must see the new size), close of the main form by the compositor and a clean exit;
-3. on sway, KWin and GNOME Shell the **portal's file dialog**: xdg-desktop-portal started by D-Bus activation in the
+3. `Hello --own-titlebar --selftest` (`IFMXWaylandWindowFrame` without input: decorations off, the listener at once
+   and after the configure, nothing started without a press, a drop-down of the undecorated window, maximize/restore
+   through the service, decorations on and off again; a screenshot without FMXWayland's title bar) and, where the
+   compositor can be driven, `Hello --own-titlebar` with input: no decorations (the compositor's frame equals the
+   window geometry and the client area), a drag on the caption moves the window, a drag on the corner grip resizes
+   it, the maximize button and a double click maximize and restore it to its size and place, a right click shows the
+   compositor's window menu (screenshot), another window takes and gives back the activation (listener), a popup at
+   its place, minimize and the compositor showing the window again, the close button;
+4. popups opened before their window is mapped (`Hello --early-popup`, `=paint`, `=create`): an xdg_popup of the
+   main window once that is mapped, not dismissed, both on the screen (pixels of the screenshot; on compositors that
+   activate the new window FMX closes the popup again, see [What does not work](#what-does-not-work-yet));
+5. on sway, KWin and GNOME Shell the **portal's file dialog**: xdg-desktop-portal started by D-Bus activation in the
    run's session with the compositor's backend (sway: xdg-desktop-portal-gtk; KWin: -kde; GNOME Shell: -gtk, since
    xdg-desktop-portal-gnome hands file dialogs to Nautilus, which does not run as root): the request, the program's
    window exported with xdg-foreign as the parent and the dialog its child for the compositor (KWin, GNOME Shell
@@ -289,6 +318,10 @@ its log, the compositor's view of the windows and screenshots:
    portal, the program ending while a folder dialog is open (its request closed, the dialog gone), a clean exit.
    What cannot be automated: a click into the portal's dialog at a known place (its layout is the toolkit's; the
    keyboard answers it), and the program's windows under it (the dialogs cover them on a 1280x800 output).
+
+The self-test and the scenario run on a private session bus without services (no portal: FMX's own file dialogs),
+the other parts on the run's session bus. `-Parts` picks some of `selftest, frame-selftest, early, scenario, frame,
+portal`.
 
 | | Weston 14 | sway 1.11 | sway 1.11 `border csd` | KWin 6.6 | GNOME Shell 50 (Mutter) |
 |---|---|---|---|---|---|
@@ -314,11 +347,22 @@ its log, the compositor's view of the windows and screenshots:
 | Maximize/restore: program, compositor, title bar | self-test | n/a (no maximize in sway) | n/a | pass, pass, n/a | pass, pass, pass |
 | Resize from code | — | pass | pass | pass | pass |
 | Close by the compositor, clean exit | — | pass | pass | pass | pass |
+| Default font (fontconfig's sans-serif) | pass | pass | pass | pass | pass |
+| Popups opened before the window is mapped (`--early-popup`, `=paint`, `=create`) | pass, both on the screen | pass (FMX closes them at the activation) | pass (likewise) | pass (likewise) | pass (likewise) |
+| Own title bar, self-test: no decorations, listener, maximize, decorations on and off | pass | pass (maximize n/a) | pass (maximize n/a) | pass | pass |
+| Own title bar with input: move, resize, activation, popup, close button | — | pass | pass | pass | pass |
+| Own title bar: maximize/restore by button and double click, back to size and place | — | n/a | n/a | pass | pass |
+| Own title bar: the compositor's window menu, minimize | — | n/a | n/a | pass | pass |
 
-Last run (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK, with the dialogs):
-14 runs (Weston 1, 2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2,
-1.5), 946 checks passed, 26 not applicable (maximize on sway; a click on the program's window under the portal's
-dialog, which covers it), none failed. KWin's `--virtual` backend renders with QPainter, and its
+Last runs (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK), 14 runs each
+(Weston 1, 2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2, 1.5),
+before the dialogs and the window frame service were merged: with the dialogs, 946 checks passed, 26 not applicable
+(maximize on sway; a click on the program's window under the portal's dialog, which covers it), none failed; with
+the window frame service, 1366 passed, 40 not applicable (maximize, minimize and the window menu on sway), 2 failed
+(both sway `border csd` runs read the client size while sway was still giving it back after the decorations went
+again; the check now takes any size there, as for sway and KWin), then sway 1, KWin 1, GNOME Shell 1 and 1.5 after
+the fix of `SetDecorated` before the first show: 482 passed, 8 not applicable, none failed. KWin's `--virtual`
+backend renders with QPainter, and its
 screenshot interface (`org.kde.KWin.ScreenShot2`) needs OpenGL, which WSL cannot give it (no DRM render node): the
 test runs KWin nested in a headless sway (KWin's Wayland backend, its window fullscreen there; KWin takes the host
 output's scale), and KWin `--virtual` for the self-test alone. GNOME Shell runs with a test extension
@@ -330,14 +374,22 @@ it) made FMX ask to activate it again, a loop of activation requests that kept t
 click (sway, KWin, GNOME); the modal form gets the activation now. Title bar buttons follow
 `xdg_toplevel.wm_capabilities` (sway offers neither maximize nor minimize). FMX learns the new window rectangle when
 the compositor switches the decoration mode (sway's `border csd`; sway keeps the window's outer size, so the client
-area is 692x506 there), and lays the form out again then (FMX's file dialog had its buttons cut off: FMX saw the
-same window rectangle and did not realign its aligned controls). Popups are placed where asked on all of them
-(`popup configure x,y (asked x,y)` in the debug log). The portal part found what the portals need in a session
-without a desktop session manager: `XDG_CURRENT_DESKTOP` and `XDG_SESSION_TYPE=wayland` (else
-xdg-desktop-portal-gnome serves settings only), the compositor's display in the D-Bus activation environment before
-the compositor starts (GNOME Shell and KWin start the portal at once), Qt's Wayland shell integration
-(`qt6-wayland`) for xdg-desktop-portal-kde; xdg-desktop-portal-gtk answers Escape with response 2, and
-xdg-desktop-portal 1.21 refuses `Request.Close` from another client.
+area is 692x506 there). FMX resizes its canvas and realigns a form only when its window rectangle changes size, so
+when only the client area changes inside a window of the same outer size (decorations switched by the compositor or
+by the program), FMXWayland does those steps of `SetBounds` itself (FMX's file dialog had its buttons cut off on
+sway with `border csd`; an own title bar turned on and off left the form aligned to the old client area). Popups are
+placed where asked on all of them (`popup configure x,y (asked x,y)` in the debug log). With the window frame
+service: GNOME Shell put a maximized window that a double click on the program's caption restored at the top left
+corner (under its top bar) when the first click had started a move; moves now start on the drag. `SetDecorated`
+before the first show reported the window's provisional size to FMX and so replaced the size the program had given
+the form (FMR Ribbon's RibbonBasic opened at 632x446 instead of 1180x640); it only records the choice then now. A
+popup made before its parent was mapped is made once the parent is (FMR Ribbon saw both windows stay invisible on
+Weston that way; in these runs Weston showed both even before the fix, the protocol requires the order). The portal
+part found what the portals need in a session without a desktop session manager: `XDG_CURRENT_DESKTOP` and
+`XDG_SESSION_TYPE=wayland` (else xdg-desktop-portal-gnome serves settings only), the compositor's display in the
+D-Bus activation environment before the compositor starts (GNOME Shell and KWin start the portal at once), Qt's
+Wayland shell integration (`qt6-wayland`) for xdg-desktop-portal-kde; xdg-desktop-portal-gtk answers Escape with
+response 2, and xdg-desktop-portal 1.21 refuses `Request.Close` from another client.
 
 Running it (in Ubuntu 26.04: `apt install weston sway grim kwin-wayland kwin-common kwin-style-breeze gnome-shell
 mutter python3-dbus wayland-utils`, for the portal part `xdg-desktop-portal xdg-desktop-portal-gtk
@@ -389,6 +441,95 @@ that). Never change this declaration; extensions get a new interface with a new 
 - Everything is on the main thread; FMXWayland dispatches only the default event queue, with the
   `wl_display_prepare_read` protocol, so Vulkan WSI's own queue can coexist.
 
+## IFMXWaylandWindowFrame (for programs with their own title bar)
+
+A program that draws its own title bar (FMR Ribbon's integrated caption and tab row, a Chrome-like tab strip, ...)
+needs the platform to stop decorating its window and to start interactive moves and resizes for it:
+`xdg_toplevel.move`/`resize`/`show_window_menu` need the `wl_seat` and the serial of the pressing input event, which
+only the platform has. FMXWayland registers this FMX platform service in `FmuxInit`, next to
+`IFMXWaylandNativeWindow`. The declaration is FMR Ribbon's (`Source\Frame\FMR.Frame.Wayland.pas`, its
+`Docs\LINUX.md`); FMXWayland has it in `FMXWayland.Frame`. A program declares the same interfaces (same GUIDs, the
+same methods in the same order, the same signatures, Delphi's default calling convention) and asks with
+`TPlatformServices.Current.SupportsPlatformService(IFMXWaylandWindowFrame, Svc)`; neither depends on the other. Never
+change it; extensions get a new interface with a new GUID.
+
+```pascal
+const
+  { Edges of BeginResize: the values of xdg_toplevel.resize_edge. }
+  FmxwEdgeNone = 0; FmxwEdgeTop = 1; FmxwEdgeBottom = 2; FmxwEdgeLeft = 4; FmxwEdgeTopLeft = 5;
+  FmxwEdgeBottomLeft = 6; FmxwEdgeRight = 8; FmxwEdgeTopRight = 9; FmxwEdgeBottomRight = 10;
+  { Bits of GetStates: 1 shl <xdg_toplevel.state> of the last configure. }
+  FmxwStateMaximized = 1 shl 1; FmxwStateFullscreen = 1 shl 2; FmxwStateResizing = 1 shl 3;
+  FmxwStateActivated = 1 shl 4; FmxwStateTiledLeft = 1 shl 5; FmxwStateTiledRight = 1 shl 6;
+  FmxwStateTiledTop = 1 shl 7; FmxwStateTiledBottom = 1 shl 8; FmxwStateSuspended = 1 shl 9;
+  { Bits of GetCapabilities: 1 shl <xdg_toplevel.wm_capabilities>; FmxwCapsUnknown before xdg_wm_base 5. }
+  FmxwCapWindowMenu = 1 shl 1; FmxwCapMaximize = 1 shl 2; FmxwCapFullscreen = 1 shl 3; FmxwCapMinimize = 1 shl 4;
+  FmxwCapsUnknown = Cardinal($FFFFFFFF);
+
+type
+  IFMXWaylandWindowFrameListener = interface
+    ['{785C5760-E413-4153-82DF-E857D1AA70AC}']
+    procedure WindowFrameChanged(const AHandle: TWindowHandle; const AStates, ACapabilities: Cardinal);
+  end;
+
+  IFMXWaylandWindowFrame = interface
+    ['{547B5786-5639-43A4-A598-1A03B465783A}']
+    procedure SetDecorated(const AHandle: TWindowHandle; const AValue: Boolean);
+    function GetDecorated(const AHandle: TWindowHandle): Boolean;
+    function BeginMove(const AHandle: TWindowHandle): Boolean;
+    function BeginResize(const AHandle: TWindowHandle; const AEdges: Cardinal): Boolean;
+    function ShowWindowMenu(const AHandle: TWindowHandle; const AClientPoint: TPointF): Boolean;
+    procedure Minimize(const AHandle: TWindowHandle);
+    procedure SetMaximized(const AHandle: TWindowHandle; const AValue: Boolean);
+    function GetStates(const AHandle: TWindowHandle): Cardinal;
+    function GetCapabilities(const AHandle: TWindowHandle): Cardinal;
+    procedure SetFrameListener(const AHandle: TWindowHandle; const AListener: IFMXWaylandWindowFrameListener);
+  end;
+```
+
+`AHandle` is the form's `Handle`. Handles that are not toplevels of FMXWayland (popups, foreign handles): the methods
+do nothing and return False/0. Main thread only.
+
+| Method | What FMXWayland does |
+|---|---|
+| `SetDecorated(H, False)` | No decorations at all: the client-side title bar (subsurface) goes, and where the compositor has xdg-decoration it is asked for `client_side` (KWin and sway draw none then). Kept for the window: configures, the compositor's decoration answers and hide/show do not bring them back. The window geometry is the surface (`set_window_geometry(0, 0, w, h)`), `DecorationInsets` are 0, FMX's window rectangle is the client rectangle. **Before the window's first show** (a form's constructor, `FormCreate`, FMR's frame attaching to a new form) only the choice is recorded: nothing is reported to FMX and the window's size is not touched, so the `Width`/`Height` the program gave the form (before or after the call) stay and become the client area when the form is shown (FMX keeps a form's size to itself until its first show and sets it then). **Once the window has been shown** it keeps its outer size and place (the client area takes the room of the decorations; a maximized window must keep the configured size) and FMX gets the new bounds and realigns; a hidden window keeps its client size. `True`: the platform's choice again (`server_side` asked, or its own title bar), with the same rules. |
+| `GetDecorated(H)` | True while the window has FMXWayland's title bar, or the compositor's (asked for and not refused). |
+| `BeginMove(H)` | True when the latest pointer button press on any surface of the window (its content or its title bar) is still held. The move itself (`xdg_toplevel.move` with that press's serial) starts when the pointer has been dragged 4 pixels with the button held, as GTK does: a click or a double click on the caption stays a click (no button release lost to the compositor; GNOME Shell put a maximized window restored right after a move that started at the first click of a double click to the top left corner). False without a held press, for popups. |
+| `BeginResize(H, Edges)` | `xdg_toplevel.resize` with the held press's serial at once; False without one or for an edge value that is not one of xdg-shell's (a protocol error otherwise). |
+| `ShowWindowMenu(H, P)` | `xdg_toplevel.show_window_menu` at `P` (client = surface coordinates) with the held press's serial; False without one or without the `window_menu` capability. |
+| `Minimize(H)` | `xdg_toplevel.set_minimized` where the window manager can minimize (not sway); FMX's `WindowState` becomes `wsMinimized` (Wayland does not tell; the next activation brings `wsNormal` back), as the minimize button of FMXWayland's title bar does. |
+| `SetMaximized(H, V)` | `set_maximized` / `unset_maximized`; the state follows with the configure (`WindowState`, the listener). |
+| `GetStates(H)` | Bits `1 shl state` of the last configure (0 before the first). |
+| `GetCapabilities(H)` | Bits `1 shl capability` of `xdg_toplevel.wm_capabilities`; `$FFFFFFFF` when the compositor never sent them (before the first configure too). |
+| `SetFrameListener(H, L)` | Keeps a reference (nil removes it; released with the window) and calls `L.WindowFrameChanged(H, States, Caps)` at once, then on the main thread after every configure that changed the states or brought new capabilities (activation changes come as states). |
+
+Also for programs with their own title bar: a pointer that leaves a window while a button is held (the compositor
+took it for a move, a resize or its window menu) gives FMX the release, so the control that took the press lets the
+mouse capture go.
+
+`samples\Hello --own-titlebar` uses the service through its own copy of the declaration (`HelloTitleBar.pas`): a
+blue caption that moves the window, maximizes and restores it on a double click and shows the window menu on a right
+click, minimize/maximize/close buttons (those the window manager offers), 5 pixel resize grips at the edges and the
+states from the listener. Like a program, it sets the form's `Width`/`Height` in its constructor (720x460,
+`--size=WxH`; `--size-after=WxH` sets it again after the frame is attached) and turns the decorations off before the
+first show; the tests check that the window opens at that size (FMX's form, the client area, the buffer at the
+scale) and follows sizes set from code later. What the compositors do with it ([Compositors](#compositors), `tests\compositors.ps1`):
+
+| | Weston 14 | sway 1.11 | KWin 6.6 | GNOME Shell 50 |
+|---|---|---|---|---|
+| No decorations (window geometry = client area, no title bar of the compositor) | pass (self-test) | pass (sway draws none for `client_side`) | pass | pass |
+| Move by dragging the caption | — (no input) | pass (floating window) | pass | pass |
+| Resize by the corner grip | — | pass | pass | pass |
+| Maximize/restore: button, double click; back to size and place | self-test (`SetMaximized`) | n/a (no maximize) | pass | pass |
+| Window menu (right click) | n/a (no `window_menu`) | n/a (no `window_menu`) | pass (KWin's menu) | pass (GNOME Shell's menu) |
+| Activation in the listener (another window focused and closed) | — (no focus headless) | pass | pass | pass |
+| Minimize, shown again by the compositor | — | n/a (no minimize) | pass | pass |
+| Decorations back (`SetDecorated(True)`) and off again | pass: FMXWayland's title bar, same outer size | pass: sway's; sway keeps the outer size of the floating window, the client area stays smaller by its title bar | pass: Breeze; likewise | pass: FMXWayland's |
+
+| GNOME Shell 50: the program's title bar, GNOME Shell's window menu after a right click on it | KWin 6.6: likewise, KWin's window menu |
+|---|---|
+| ![GNOME Shell](docs/screenshots/gnome-own-titlebar-menu.png) | ![KWin](docs/screenshots/kwin-own-titlebar-menu.png) |
+
 ## Status
 
 Tested on WSLg (Weston-based, RDP; xdg_wm_base 1, no xdg-decoration, no cursor-shape, no fractional-scale), and
@@ -402,7 +543,7 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
 | Timers | FmuxCreateTimer, FmuxDestroyTimer | implemented |
 | Windows | FmuxCreateWindow, FmuxDestroyWindow, FmuxShowWindow, FmuxSetWindowState, FmuxSetWindowTitle, FmuxGet/SetClientSize, FmuxGetWindowRect, FmuxInvalidateRect, FmuxProcessUpdates, FmuxClientToScreen, FmuxScreenToClient, FmuxGetWindowScale, FmuxGet/SetWindowFullScreen, FmuxShowModal, FmuxSetMainWindow | implemented |
 | Windows (Wayland limits) | FmuxSetWindowRect (position virtual), FmuxActivateWindow/FmuxWindowBringToFront (xdg-activation request), FmuxWindowSendToBack (no-op), FmuxSetWindowIcon (ignored), FmuxSetCapture/ReleaseCapture (implicit grab), FmuxGetWindowNativeHandle/DrawingHandle (wl_surface) | partial |
-| Popups | through FmuxCreateWindow (Popup) / FmuxShowWindow | implemented (xdg_popup, no grab) |
+| Popups | through FmuxCreateWindow (Popup) / FmuxShowWindow | implemented (xdg_popup, no grab; made once the parent window is mapped) |
 | Screens | FmuxGetScreenSize, FmuxGetScreenScale, FmuxGetDisplayFromWindow, FmuxGetDisplayFromPoint; FmuxGetDisplayInfo (work area = output) | implemented / partial |
 | Mouse, cursor | FmuxGetMousePos (partial: last position over an own window), FmuxSetCursor | implemented |
 | Keyboard | (FmuxKey callback): xkbcommon, repeat, compose, layout-independent shortcuts | implemented |
@@ -415,7 +556,7 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
 | IME | FmuxImeEnterControl/ExitControl/SetCaretPos (no-ops: characters come from xkbcommon) | partial |
 | Tooltips, gestures | FmuxAddTooltip/RemoveTooltip, FmuxAdd/RemoveGestureRecognizer (no-ops) | partial |
 | OpenGL contexts, PDF canvas | FmuxCreateSharedContext, FmuxCreateThreadContext, FmuxMakeCurrentContext, FmuxFlushBuffer, FmuxCreatePDFContext... | stub |
-| Fonts | FmuxGetFontCount, FmuxGetFontName (the system's families); FmuxAddCustomFont, FmuxAddCustomFontFromData | partial / stub |
+| Fonts | FmuxGetFontCount, FmuxGetFontName (the system's families); FmuxAddCustomFont, FmuxAddCustomFontFromData; FMX's IFMXSystemFontService (default family: fontconfig's sans-serif) | partial / stub; service implemented |
 | Main menu (native menu bar) | FmuxCreateMainMenu, FmuxCreateMenu, FmuxCreateMenuItem, FmuxMenuAddItem, FmuxSetSubmenu, FmuxUpdateMenuItem | stub (no menu bar shown) |
 | Printing, PDF | FmuxEnumPrinters ... FmuxSetAlwaysAskOutputFile | stub |
 | Web view, media, video capture | FmuxCreateWebView..., FmuxCreateMedia..., FmuxCaptureDeviceEnum... | stub |
@@ -445,6 +586,19 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
   KWin and GNOME Shell focus it). Without an input event yet (no serial) compositors may refuse.
 - On compositors without maximize (sway: `wm_capabilities` lists only fullscreen) `WindowState := wsMaximized` is
   ignored by the compositor while FMX keeps `wsMaximized`.
+- `IFMXWaylandWindowFrame`: no touch (FMXWayland has no `wl_touch` yet; only pointer presses start moves and
+  resizes); no window geometry insets for shadows and invisible resize borders outside the window (a later interface).
+  A move starts on the drag, not at the press (see the table): a program that waits for the compositor's grab at the
+  press itself sees it a few pixels later.
+- The default font's size is FMX's 12 device-independent pixels, not the desktop's (fontconfig's match carries none;
+  TODO: GNOME's `org.gnome.desktop.interface font-name` through the settings portal once FMXWayland has a D-Bus
+  client).
+- A popup opened before its window is on the screen (from a timer, `FormCreate`) waits for the window; compositors
+  that activate the new window then (sway, KWin, GNOME Shell) make FMX close it again: FMX closes the popups of a form
+  whenever its activation changes (FMX.Platform.Linux, as with libfmux).
+- FMX frees a form's controls after its window handle: a form freed while a combo box's drop-down is open (closed by
+  code, not by the user, whose close goes through FMX's popup handling first) ends in an access violation in FMX
+  (`TCustomForm.DoRemoveObject` asks the gone window for its client size). Close the drop-down first.
 
 ## Next steps
 
@@ -453,7 +607,9 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
 2. **IME** with text-input-unstable-v3 (the protocol unit exists): FmuxImeEnterControl/ExitControl/SetCaretPos to
    `enable`/`set_cursor_rectangle`, preedit to FMX's marked text.
 3. **Decorations**: polish the client-side ones (shadows, theme colors, `prefers-color-scheme` through the portal).
-   xdg-decoration where offered and the tests on KWin, sway and GNOME Shell are done.
+   xdg-decoration where offered, the tests on KWin, sway and GNOME Shell and `IFMXWaylandWindowFrame` for programs
+   with their own title bar are done; next for it: window geometry insets (shadows, resize borders outside the
+   window), the desktop's dark/light preference and its font (settings portal).
 4. **Drag and drop** over wl_data_device (FMX's Drag callback, FmuxBeginDragDrop), clipboard images and custom
    formats, primary selection.
 5. `FmuxOpenUrl`/`FmuxOpenFile` through the OpenURI portal (the D-Bus client is there) or `xdg-open`; the dark style

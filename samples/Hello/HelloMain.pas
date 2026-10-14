@@ -53,7 +53,13 @@ type
     FQuitInFolderDialog: Integer;
     FSelfDir: string;
     FSelfTries: Integer;
+    FEarlyPopup: TTimer;
+    FEarlyPopupOnPaint: Boolean;
+    FEarlyPopupOnCreate: Boolean;
     procedure Log(const AText: string);
+    procedure LogFonts;
+    procedure EarlyPopupTimer(Sender: TObject);
+    procedure FormPaint(Sender: TObject; Canvas: TCanvas; const ARect: TRectF);
     procedure SelfTestStep(Sender: TObject);
     procedure SelfTestModalTimer(Sender: TObject);
     procedure SelfTestMessageTimer(Sender: TObject);
@@ -164,6 +170,28 @@ begin
       FDialogDir := S.Substring(Length('--dialog-dir='))
     else if S.StartsWith('--quit-in-folder-dialog=') then
       FQuitInFolderDialog := StrToIntDef(S.Substring(Length('--quit-in-folder-dialog=')), 0)
+    else if S = '--early-popup' then
+    begin
+      // The combo box drop-down (an xdg_popup) opened at once, before the window's first configure.
+      FVerbose := True;
+      FEarlyPopup := TTimer.Create(Self);
+      FEarlyPopup.Interval := 1;
+      FEarlyPopup.OnTimer := EarlyPopupTimer;
+      FEarlyPopup.Enabled := True;
+    end
+    else if S = '--early-popup=create' then
+    begin
+      // The drop-down opened in FormCreate, before the window is shown.
+      FVerbose := True;
+      FEarlyPopupOnCreate := True;
+    end
+    else if S = '--early-popup=paint' then
+    begin
+      // The drop-down opened while the window paints its first frame: configured, not mapped yet.
+      FVerbose := True;
+      FEarlyPopupOnPaint := True;
+      OnPaint := FormPaint;
+    end
     else if S = '--selftest' then
     begin
       FVerbose := True;
@@ -294,6 +322,46 @@ begin
   OnDeactivate := FormDeactivate;
   Log('created');
   Log('canvas ' + TCanvasManager.DefaultCanvas.ClassName);
+  LogFonts;
+  if FEarlyPopupOnCreate then
+  begin
+    FCombo.DropDown;
+    Log(Format('early popup: drop-down open %s', [BoolToStr(FCombo.DroppedDown, True)]));
+  end;
+end;
+
+/// The default font of FMX (the platform's IFMXSystemFontService), what a styled label resolves, and the width of a
+/// sample text in it on the canvas next to other families: equal widths would mean the canvas did not use it.
+procedure THelloForm.LogFonts;
+const
+  CSample = 'Hello, Wayland! 0123456789';
+var
+  F: TFont;
+  B: TBitmap;
+  WDefault, WTahoma, WUbuntu: Single;
+begin
+  F := TFont.Create;
+  try
+    Log(Format('font: default "%s" %s', [F.Family, FormatFloat('0.0', F.Size, TFormatSettings.Invariant)]));
+  finally
+    F.Free;
+  end;
+  FCountLabel.ApplyStyleLookup;
+  Log(Format('font: label "%s" %s', [FCountLabel.ResultingTextSettings.Font.Family,
+    FormatFloat('0.0', FCountLabel.ResultingTextSettings.Font.Size, TFormatSettings.Invariant)]));
+  B := TBitmap.Create(16, 16);
+  try
+    WDefault := B.Canvas.TextWidth(CSample);
+    B.Canvas.Font.Family := 'Tahoma';
+    WTahoma := B.Canvas.TextWidth(CSample);
+    B.Canvas.Font.Family := 'Ubuntu';
+    WUbuntu := B.Canvas.TextWidth(CSample);
+    Log(Format('font: text width default %s, Tahoma %s, Ubuntu %s', [FormatFloat('0.0', WDefault,
+      TFormatSettings.Invariant), FormatFloat('0.0', WTahoma, TFormatSettings.Invariant), FormatFloat('0.0', WUbuntu,
+      TFormatSettings.Invariant)]));
+  finally
+    B.Free;
+  end;
 end;
 
 procedure THelloForm.FormActivate(Sender: TObject);
@@ -987,10 +1055,31 @@ begin
   end;
 end;
 
+procedure THelloForm.EarlyPopupTimer(Sender: TObject);
+begin
+  FEarlyPopup.Enabled := False;
+  FCombo.DropDown;
+  Log(Format('early popup: drop-down open %s', [BoolToStr(FCombo.DroppedDown, True)]));
+end;
+
+procedure THelloForm.FormPaint(Sender: TObject; Canvas: TCanvas; const ARect: TRectF);
+begin
+  if not FEarlyPopupOnPaint then
+    Exit;
+  FEarlyPopupOnPaint := False;
+  FCombo.DropDown;
+  Log(Format('early popup: drop-down open %s', [BoolToStr(FCombo.DroppedDown, True)]));
+end;
+
 procedure THelloForm.QuitTimerTimer(Sender: TObject);
 begin
   FQuitTimer.Enabled := False;
   Log('quit timer: closing');
+  // FMX frees a form's children after its handle: a combo box whose drop-down is still open then asks the gone
+  // window for its client size (TCustomForm.DoRemoveObject), an access violation on Linux. The title
+  // bar's close button closes the popups first (FmuxClose); this timer has to do it itself.
+  if FCombo.DroppedDown then
+    FCombo.DropDown;
   Close;
 end;
 

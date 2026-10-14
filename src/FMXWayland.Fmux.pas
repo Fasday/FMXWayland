@@ -38,8 +38,8 @@ uses
   System.SysUtils, System.Types, System.Classes, System.UITypes, System.Math, System.Messaging,
   System.Generics.Collections, FMX.Types, FMX.Graphics, FMX.Forms, FMX.Controls, FMX.Dialogs, FMX.DialogHelper,
   FMX.Platform, FMX.Platform.Linux, FMUX.Api,
-  FMXWayland.Log, FMXWayland.Posix, FMXWayland.Platform, FMXWayland.Native, FMXWayland.Cairo, FMXWayland.DBus,
-  FMXWayland.DialogTypes, FMXWayland.Dialogs;
+  FMXWayland.Log, FMXWayland.Posix, FMXWayland.Platform, FMXWayland.Native, FMXWayland.Frame,
+  FMXWayland.SystemFont, FMXWayland.Cairo, FMXWayland.DBus, FMXWayland.DialogTypes, FMXWayland.Dialogs;
 
 type
   /// <summary>An FMX window.</summary>
@@ -60,6 +60,11 @@ type
     FRetainedSerial: Int64;
     FDamage: array[0..7] of TRect;
     FBufferSerials: TArray<TPair<Pointer, Int64>>;
+    // IFMXWaylandWindowFrame.SetFrameListener (released with the window).
+    FFrameListener: IFMXWaylandWindowFrameListener;
+    // The client size FMX was last told about (ReportBounds).
+    FReportedWidth: Integer;
+    FReportedHeight: Integer;
     function Form: TCommonCustomForm;
     function WindowRect: TRectF;
     procedure SetWindowRect(const ARect: TRectF);
@@ -83,6 +88,7 @@ type
       override;
     procedure DoKey(const AEvent: TWlKeyEvent; const AKey: Word; const AChar: Char; const AState: Integer); override;
     procedure DoScaleChanged; override;
+    procedure DoFrameChanged; override;
   end;
 
   /// <summary>IFMXWaylandNativeWindow, registered as a platform service.</summary>
@@ -95,6 +101,24 @@ type
     function GetBufferSize(const AHandle: TWindowHandle): TSize;
     function GetScale(const AHandle: TWindowHandle): Single;
     procedure SetExternalPresentation(const AHandle: TWindowHandle; const AValue: Boolean);
+  end;
+
+  /// <summary>IFMXWaylandWindowFrame, registered as a platform service: the window frame of toplevels for programs
+  /// that draw their own title bar.</summary>
+  TWindowFrameService = class(TInterfacedObject, IFMXWaylandWindowFrame)
+  private
+    function ToplevelOf(const AHandle: TWindowHandle): TFmuxWindow;
+  public
+    procedure SetDecorated(const AHandle: TWindowHandle; const AValue: Boolean);
+    function GetDecorated(const AHandle: TWindowHandle): Boolean;
+    function BeginMove(const AHandle: TWindowHandle): Boolean;
+    function BeginResize(const AHandle: TWindowHandle; const AEdges: Cardinal): Boolean;
+    function ShowWindowMenu(const AHandle: TWindowHandle; const AClientPoint: TPointF): Boolean;
+    procedure Minimize(const AHandle: TWindowHandle);
+    procedure SetMaximized(const AHandle: TWindowHandle; const AValue: Boolean);
+    function GetStates(const AHandle: TWindowHandle): Cardinal;
+    function GetCapabilities(const AHandle: TWindowHandle): Cardinal;
+    procedure SetFrameListener(const AHandle: TWindowHandle; const AListener: IFMXWaylandWindowFrameListener);
   end;
 
 {$SCOPEDENUMS ON}
@@ -189,10 +213,35 @@ begin
     Round(ARect.Height) - Ins.Top - Ins.Bottom);
 end;
 
+type
+  /// <summary>Access to the protected steps of TCommonCustomForm.SetBounds.</summary>
+  TFormAccess = class(TCommonCustomForm);
+
 procedure TFmuxWindow.ReportBounds;
+var
+  R: TRectF;
+  F: TCommonCustomForm;
+  SameSize, ClientChanged: Boolean;
 begin
-  if Assigned(FCreate.BoundsChanged) then
-    FCreate.BoundsChanged(FCreate.Data, WindowRect);
+  if not Assigned(FCreate.BoundsChanged) then
+    Exit;
+  R := WindowRect;
+  F := Form;
+  SameSize := (F <> nil) and (R.Truncate.Width = F.Width) and (R.Truncate.Height = F.Height);
+  ClientChanged := (Width <> FReportedWidth) or (Height <> FReportedHeight);
+  FReportedWidth := Width;
+  FReportedHeight := Height;
+  FCreate.BoundsChanged(FCreate.Data, R);
+  if SameSize and ClientChanged and (F.Handle <> nil) then
+    try
+      // FMX resizes its canvas and realigns only when its window rectangle changes size. Here the client area
+      // changed in a window of the same size (the decorations came or went): the steps of SetBounds for a new size.
+      TFormAccess(F).ResizeHandle;
+      TFormAccess(F).Resize;
+      TMessageManager.DefaultManager.SendMessage(F, TSizeChangedMessage.Create(TSize.Create(F.Width, F.Height)));
+    except
+      Application.HandleException(F);
+    end;
 end;
 
 procedure TFmuxWindow.RenderTitle(const AWidth, AHeight: Integer; const ATitle: string; const AActive: Boolean;
@@ -473,34 +522,9 @@ begin
   end;
 end;
 
-type
-  /// <summary>Access to the form's protected layout methods.</summary>
-  TFormAccess = class(TCommonCustomForm);
-
 procedure TFmuxWindow.DoResized;
-var
-  F: TCommonCustomForm;
-  OldWidth, OldHeight: Integer;
 begin
-  F := Form;
-  if (F = nil) or (F.Handle = nil) then
-  begin
-    ReportBounds;
-    Exit;
-  end;
-  OldWidth := F.Width;
-  OldHeight := F.Height;
   ReportBounds;
-  // The client area changed inside a window of the same outer size (decorations switched by the compositor, as
-  // sway's "border csd" does): FMX's SetBounds sees no change and would not lay the form out again.
-  if (F.Width = OldWidth) and (F.Height = OldHeight) then
-    try
-      TFormAccess(F).ResizeHandle;
-      TFormAccess(F).Resize;
-      TMessageManager.DefaultManager.SendMessage(F, TSizeChangedMessage.Create(TSize.Create(F.Width, F.Height)));
-    except
-      Application.HandleException(F);
-    end;
 end;
 
 procedure TFmuxWindow.DoMoved;
@@ -594,6 +618,23 @@ begin
   end;
 end;
 
+procedure TFmuxWindow.DoFrameChanged;
+var
+  F: TCommonCustomForm;
+  L: IFMXWaylandWindowFrameListener;
+begin
+  WlLog(TWlLogLevel.Debug, 'frame of "%s": states $%x capabilities $%x', [Title, StateBits, CapabilityBits]);
+  L := FFrameListener;
+  F := Form;
+  if (L = nil) or (F = nil) or (F.Handle = nil) then
+    Exit;
+  try
+    L.WindowFrameChanged(F.Handle, StateBits, CapabilityBits);
+  except
+    Application.HandleException(F);
+  end;
+end;
+
 {$ENDREGION}
 
 {$REGION 'TNativeWindowService'}
@@ -663,9 +704,124 @@ end;
 
 {$ENDREGION}
 
+{$REGION 'TWindowFrameService'}
+
+function TWindowFrameService.ToplevelOf(const AHandle: TWindowHandle): TFmuxWindow;
+var
+  P: Pointer;
+begin
+  Result := nil;
+  if (AHandle is TLinuxWindowHandle) and (WlDisplay <> nil) then
+  begin
+    P := TLinuxWindowHandle(AHandle).Window;
+    if (P <> nil) and WlDisplay.Windows.Contains(TWlWindow(P)) and
+      (TWlWindow(P).Kind = TWlWindowKind.Toplevel) then
+      Result := TFmuxWindow(P);
+  end;
+end;
+
+procedure TWindowFrameService.SetDecorated(const AHandle: TWindowHandle; const AValue: Boolean);
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  if W <> nil then
+    W.SetDecorated(AValue);
+end;
+
+function TWindowFrameService.GetDecorated(const AHandle: TWindowHandle): Boolean;
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  Result := (W <> nil) and W.HasDecorations;
+end;
+
+function TWindowFrameService.BeginMove(const AHandle: TWindowHandle): Boolean;
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  Result := (W <> nil) and W.BeginMove;
+end;
+
+function TWindowFrameService.BeginResize(const AHandle: TWindowHandle; const AEdges: Cardinal): Boolean;
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  Result := (W <> nil) and W.BeginResize(AEdges);
+end;
+
+function TWindowFrameService.ShowWindowMenu(const AHandle: TWindowHandle; const AClientPoint: TPointF): Boolean;
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  // Client coordinates are the surface's (the client-side decorations are a subsurface around it).
+  Result := (W <> nil) and W.ShowWindowMenu(Round(AClientPoint.X), Round(AClientPoint.Y));
+end;
+
+procedure TWindowFrameService.Minimize(const AHandle: TWindowHandle);
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  if W <> nil then
+    W.Minimize;
+end;
+
+procedure TWindowFrameService.SetMaximized(const AHandle: TWindowHandle; const AValue: Boolean);
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  if W <> nil then
+    W.SetMaximized(AValue);
+end;
+
+function TWindowFrameService.GetStates(const AHandle: TWindowHandle): Cardinal;
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  if W <> nil then
+    Result := W.StateBits
+  else
+    Result := 0;
+end;
+
+function TWindowFrameService.GetCapabilities(const AHandle: TWindowHandle): Cardinal;
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  if W <> nil then
+    Result := W.CapabilityBits
+  else
+    Result := 0;
+end;
+
+procedure TWindowFrameService.SetFrameListener(const AHandle: TWindowHandle;
+  const AListener: IFMXWaylandWindowFrameListener);
+var
+  W: TFmuxWindow;
+begin
+  W := ToplevelOf(AHandle);
+  if W = nil then
+    Exit;
+  W.FFrameListener := AListener;
+  if AListener <> nil then
+    AListener.WindowFrameChanged(AHandle, W.StateBits, W.CapabilityBits);
+end;
+
+{$ENDREGION}
+
 {$REGION 'Application'}
 
 procedure WlInit(Flags: Integer); cdecl;
+var
+  Services: TPlatformServices;
 begin
   Disp.WakeProc :=
     procedure
@@ -677,6 +833,11 @@ begin
   begin
     GNativeServiceRegistered := True;
     TPlatformServices.Current.AddPlatformService(IFMXWaylandNativeWindow, TNativeWindowService.Create);
+    TPlatformServices.Current.AddPlatformService(IFMXWaylandWindowFrame, TWindowFrameService.Create);
+    // TFont's default family and size (FMX falls back to Tahoma without it), unless someone registered one.
+    Services := TPlatformServices.Current;
+    if not Services.SupportsPlatformService(IFMXSystemFontService) then
+      Services.AddPlatformService(IFMXSystemFontService, TSystemFontService.Create);
   end;
 end;
 
@@ -779,6 +940,8 @@ begin
     W.SetTitle(CreateStruct.Title);
   W.SetWindowRect(RectF(CreateStruct.X, CreateStruct.Y, CreateStruct.X + CreateStruct.Width,
     CreateStruct.Y + CreateStruct.Height));
+  W.FReportedWidth := W.Width;
+  W.FReportedHeight := W.Height;
   WlLog(TWlLogLevel.Debug, 'CreateWindow %p "%s" popup %s %.0f,%.0f %.0fx%.0f', [Pointer(W), W.Title,
     BoolToStr(CreateStruct.Popup, True), CreateStruct.X, CreateStruct.Y, CreateStruct.Width, CreateStruct.Height]);
   Result := W;
@@ -836,6 +999,10 @@ begin
       begin
         P := FormToWnd(TCommonCustomForm(Root));
         if Usable(TWlWindow(P)) then
+          Exit(TWlWindow(P));
+        // Its form is not on the screen yet (a popup opened in FormCreate or OnShow): the popup waits for it
+        // (TWlWindow.Show).
+        if (P <> nil) and (P <> Pointer(AWindow)) and Disp.Windows.Contains(TWlWindow(P)) then
           Exit(TWlWindow(P));
       end;
     end;

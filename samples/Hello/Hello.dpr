@@ -11,7 +11,14 @@ program Hello;
     --verbose         writes the events it gets to stdout
     --selftest        runs the self-test steps (tests\weston-headless.ps1)
     --dialog-dir=DIR  the folder the file dialogs of the buttons start in (default: HOME)
-    --quit-in-folder-dialog=N  closes the main form when the folder dialog has been open N seconds (tests) }
+    --quit-in-folder-dialog=N  closes the main form when the folder dialog has been open N seconds (tests)
+    --early-popup[=paint|create]
+                      opens the combo box drop-down before the window's first configure (a timer of 1 ms), while it
+                      paints its first frame, or in FormCreate before it is shown (tests: popups of unmapped parents)
+    --own-titlebar    instead of the main form, a form that draws its own title bar through FMXWayland's
+                      IFMXWaylandWindowFrame service (HelloTitleBar.pas; with --selftest its own steps;
+                      --size=WxH its Width and Height, 720x460 by default; --size-after=WxH set again once the
+                      frame is attached, before the show) }
 
 uses
   System.StartUpCopy,
@@ -20,13 +27,20 @@ uses
 {$IFNDEF NOSKIA}
   FMX.Skia,
 {$ENDIF}
-  HelloMain in 'HelloMain.pas' {HelloForm};
+  HelloMain in 'HelloMain.pas' {HelloForm},
+  HelloTitleBar in 'HelloTitleBar.pas';
+
+var
+  TitleBarForm: TTitleBarForm;
 
 begin
 {$IFNDEF NOSKIA}
   GlobalUseSkia := True;
 {$ENDIF}
   Application.Initialize;
-  Application.CreateForm(THelloForm, HelloForm);
+  if OwnTitleBarRequested then
+    Application.CreateForm(TTitleBarForm, TitleBarForm)
+  else
+    Application.CreateForm(THelloForm, HelloForm);
   Application.Run;
 end.
