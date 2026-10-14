@@ -1,5 +1,6 @@
 # Generated at build time from the local Delphi installation (Embarcadero's interface section): never commit
 FMUX.Api.pas
+gen/
 
 # Build output (tools\build.ps1 puts it on D:\Work\FMXWayland-build by default)
 bin/
