@@ -69,7 +69,9 @@ type
   end;
 
   /// <summary>The pixels of a frame being painted (handed to the canvas as its context): a wl_shm buffer of the
-  /// window, premultiplied BGRA, Width x Height buffer pixels = logical size x Scale.</summary>
+  /// window, premultiplied BGRA, Width x Height buffer pixels = logical size x Scale. The buffer may hold an older
+  /// frame (buffers rotate): whoever draws must draw all of it (the Skia raster canvas copies its whole back buffer).
+  /// Bits is nil under external presentation.</summary>
   TWlFrame = record
     Bits: Pointer;
     Stride: Integer;
@@ -445,7 +447,7 @@ type
     function ClipboardGetText: string;
     /// <summary>Puts text into the clipboard (this client becomes the selection owner).</summary>
     procedure ClipboardSetText(const AText: string);
-    /// <summary>Wraps a protocol global's name ('wl_compositor 4', ...) for diagnostics.</summary>
+    /// <summary>The globals the compositor announced ('wl_compositor:4,wl_shm:1,...'), for diagnostics.</summary>
     function GlobalsText: string;
     property Display: Pwl_display read FDisplay;
     property Compositor: Pwl_compositor read FCompositor;
