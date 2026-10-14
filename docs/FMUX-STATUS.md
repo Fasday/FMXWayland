@@ -22,8 +22,8 @@ once at run time.
 | FmuxSetWindowTitle | implemented |
 | FmuxSetWindowIcon | partial: ignored (no xdg-toplevel-icon yet) |
 | FmuxShowWindow | implemented |
-| FmuxActivateWindow | partial: no-op (needs an xdg-activation token) |
-| FmuxWindowBringToFront | partial: no-op on Wayland |
+| FmuxActivateWindow | partial: xdg-activation request (compositor decides) |
+| FmuxWindowBringToFront | partial: xdg-activation request (compositor decides) |
 | FmuxWindowSendToBack | partial: no-op on Wayland |
 | FmuxGetClientSize | implemented |
 | FmuxSetClientSize | implemented |

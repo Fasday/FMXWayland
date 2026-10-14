@@ -715,11 +715,15 @@ end;
 
 procedure WlActivateWindow(Wnd: Pointer); cdecl;
 begin
-  // Wayland clients cannot raise or focus their windows without an activation token from the user's action.
+  // Wayland clients cannot raise or focus windows themselves: an xdg-activation token tied to the last input event.
+  if Wnd <> nil then
+    Win(Wnd).Activate;
 end;
 
 procedure WlWindowBringToFront(Wnd: Pointer); cdecl;
 begin
+  if Wnd <> nil then
+    Win(Wnd).Activate;
 end;
 
 procedure WlWindowSendToBack(Wnd: Pointer); cdecl;
@@ -1235,8 +1239,8 @@ begin
   FMUX.Api.FmuxSetWindowState := WlSetWindowState;
   FMUX.Api.FmuxSetWindowTitle := WlSetWindowTitle;
   FMUX.Api.FmuxSetWindowIcon := WlSetWindowIcon; // partial: ignored (no xdg-toplevel-icon yet)
-  FMUX.Api.FmuxActivateWindow := WlActivateWindow; // partial: no-op (needs an xdg-activation token)
-  FMUX.Api.FmuxWindowBringToFront := WlWindowBringToFront; // partial: no-op on Wayland
+  FMUX.Api.FmuxActivateWindow := WlActivateWindow; // partial: xdg-activation request (compositor decides)
+  FMUX.Api.FmuxWindowBringToFront := WlWindowBringToFront; // partial: xdg-activation request (compositor decides)
   FMUX.Api.FmuxWindowSendToBack := WlWindowSendToBack; // partial: no-op on Wayland
   FMUX.Api.FmuxGetClientSize := WlGetClientSize;
   FMUX.Api.FmuxSetClientSize := WlSetClientSize;

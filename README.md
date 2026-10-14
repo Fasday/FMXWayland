@@ -185,7 +185,7 @@ Weston 14 headless (scale 1 and 2). 65 of 186 FMUX functions are assigned (41 fu
 | Application, loop, threads | FmuxInit, FmuxRun, FmuxHandleMessage, FmuxTerminate, FmuxWakeMainThread, FmuxGetKeyState, FmuxGet/SetVersionInfo | implemented |
 | Timers | FmuxCreateTimer, FmuxDestroyTimer | implemented |
 | Windows | FmuxCreateWindow, FmuxDestroyWindow, FmuxShowWindow, FmuxSetWindowState, FmuxSetWindowTitle, FmuxGet/SetClientSize, FmuxGetWindowRect, FmuxInvalidateRect, FmuxProcessUpdates, FmuxClientToScreen, FmuxScreenToClient, FmuxGetWindowScale, FmuxGet/SetWindowFullScreen, FmuxShowModal, FmuxSetMainWindow | implemented |
-| Windows (Wayland limits) | FmuxSetWindowRect (position virtual), FmuxActivateWindow, FmuxWindowBringToFront/SendToBack (no-ops), FmuxSetWindowIcon (ignored), FmuxSetCapture/ReleaseCapture (implicit grab), FmuxGetWindowNativeHandle/DrawingHandle (wl_surface) | partial |
+| Windows (Wayland limits) | FmuxSetWindowRect (position virtual), FmuxActivateWindow/FmuxWindowBringToFront (xdg-activation request), FmuxWindowSendToBack (no-op), FmuxSetWindowIcon (ignored), FmuxSetCapture/ReleaseCapture (implicit grab), FmuxGetWindowNativeHandle/DrawingHandle (wl_surface) | partial |
 | Popups | through FmuxCreateWindow (Popup) / FmuxShowWindow | implemented (xdg_popup, no grab) |
 | Screens | FmuxGetScreenSize, FmuxGetScreenScale, FmuxGetDisplayFromWindow, FmuxGetDisplayFromPoint; FmuxGetDisplayInfo (work area = output) | implemented / partial |
 | Mouse, cursor | FmuxGetMousePos (partial: last position over an own window), FmuxSetCursor | implemented |
@@ -213,11 +213,13 @@ Weston 14 headless (scale 1 and 2). 65 of 186 FMUX functions are assigned (41 fu
 - Drag and drop (also between applications), file dialogs, clipboard images and custom formats, IME (text-input-v3),
   touch and gestures, tooltips, window icons, printing, web browser, media player.
 - Window positions are not under the program's control (Wayland); `Position = poScreenCenter` and the like have no
-  effect. Popups do not grab the pointer: clicking another application leaves an open drop-down list open.
+  effect. Popups do not grab the pointer (xdg_popup.grab): they close like other FMX popups (a click elsewhere in
+  the program, or the form losing activation when another application is clicked).
 - Fractional scaling (wp_fractional_scale_v1 + wp_viewporter) is implemented but untested (neither WSLg nor Weston 14
   offer it); scale changes after start (moving a window to a monitor with another scale) are reported to FMX with
   `TScaleChangedMessage` but not tested.
-- `xdg_activation_v1` is bound but not used yet (FmuxActivateWindow is a no-op).
+- `FmuxActivateWindow`/`FmuxWindowBringToFront` ask for activation with an xdg-activation token (the compositor
+  decides); untested, neither WSLg nor Weston 14 offer xdg_activation_v1.
 
 ## Next steps
 
@@ -232,7 +234,7 @@ Weston 14 headless (scale 1 and 2). 65 of 186 FMUX functions are assigned (41 fu
 5. **File dialogs** through xdg-desktop-portal (D-Bus `org.freedesktop.portal.FileChooser`), `FmuxOpenUrl`/
    `FmuxOpenFile` through the OpenURI portal or `xdg-open`.
 6. **Menus**: draw `TMainMenu` as an FMX menu bar inside the window.
-7. Popup grabs (`xdg_popup.grab` for menus), `xdg_popup.reposition` (version 3), activation tokens, window icons
+7. Popup grabs (`xdg_popup.grab` for menus), `xdg_popup.reposition` (version 3), window icons
    (xdg-toplevel-icon), touch (wl_touch -> FMX touch/gesture callbacks).
 8. **X11 fallback backend** sharing the FMX adapter (`FMXWayland.Fmux` talks to the Wayland core through
    `TWlWindow`'s events; an X11 core with the same shape would plug in).

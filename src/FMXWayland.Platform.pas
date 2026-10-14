@@ -182,6 +182,7 @@ type
     FGeometryY: Integer;
     FGeometryW: Integer;
     FGeometryH: Integer;
+    FActivationToken: Pxdg_activation_token_v1;
     procedure CreateToplevelRole;
     procedure EnableCsd;
     procedure DisableCsd;
@@ -247,6 +248,9 @@ type
     procedure SetMinSize(const AWidth, AHeight: Integer);
     /// <summary>Tells the compositor that a toplevel belongs to Parent (dialogs stay above it).</summary>
     procedure SetTransientParent;
+    /// <summary>Asks the compositor to activate (raise and focus) the window, with an xdg-activation token tied to the
+    /// last input event; nothing happens without xdg_activation_v1 (the compositor may refuse anyway).</summary>
+    procedure Activate;
     /// <summary>Marks a rectangle (logical coordinates) for repainting.</summary>
     procedure Invalidate(const ARect: TRectF);
     /// <summary>Marks the whole window for repainting.</summary>
@@ -803,6 +807,23 @@ end;
 const
   CFractionalListener: Twp_fractional_scale_v1_listener = (preferred_scale: FractionalPreferredScale);
 
+procedure ActivationTokenDone(AData: Pointer; AXdgActivationTokenV1: Pxdg_activation_token_v1;
+  AToken: PAnsiChar); cdecl;
+var
+  W: TWlWindow;
+begin
+  W := TWlWindow(AData);
+  if W.FActivationToken = AXdgActivationTokenV1 then
+  begin
+    xdg_activation_v1_activate(W.FDisplay.FActivation, AToken, W.FSurface);
+    W.FActivationToken := nil;
+  end;
+  xdg_activation_token_v1_destroy(AXdgActivationTokenV1);
+end;
+
+const
+  CActivationTokenListener: Txdg_activation_token_v1_listener = (done: ActivationTokenDone);
+
 {$ENDREGION}
 
 {$REGION 'Listeners: seat, pointer, keyboard'}
@@ -1314,6 +1335,8 @@ begin
     FDisplay.RemoveWindow(Self);
     if FFrameCallback <> nil then
       wl_callback_destroy(FFrameCallback);
+    if FActivationToken <> nil then
+      xdg_activation_token_v1_destroy(FActivationToken);
     DisableCsd;
     DestroyRole;
     if FViewport <> nil then
@@ -1949,6 +1972,20 @@ begin
   if (FParent <> nil) and (FParent.FToplevel <> nil) and FParent.FVisible then
     P := FParent.FToplevel;
   xdg_toplevel_set_parent(FToplevel, P);
+end;
+
+procedure TWlWindow.Activate;
+begin
+  if (FDisplay.FActivation = nil) or (FToplevel = nil) or not FVisible or (FActivationToken <> nil) then
+    Exit;
+  FActivationToken := xdg_activation_v1_get_activation_token(FDisplay.FActivation);
+  xdg_activation_token_v1_add_listener(FActivationToken, @CActivationTokenListener, Self);
+  if (FDisplay.FSeat <> nil) and (FDisplay.FLastInputSerial <> 0) then
+    xdg_activation_token_v1_set_serial(FActivationToken, FDisplay.FLastInputSerial, FDisplay.FSeat);
+  if FDisplay.FKeyboardWindow <> nil then
+    xdg_activation_token_v1_set_surface(FActivationToken, FDisplay.FKeyboardWindow.FSurface);
+  xdg_activation_token_v1_commit(FActivationToken);
+  FDisplay.Flush;
 end;
 
 procedure TWlWindow.Show;
