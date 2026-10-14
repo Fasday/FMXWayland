@@ -1148,6 +1148,9 @@ begin
     D.FOffers.Remove(D.FSelection.FOffer);
   end;
   D.FSelection := O;
+  // A selection of the seat replaces the process-local clipboard used while there was no seat.
+  if O <> nil then
+    D.FOwnLocal := False;
 end;
 
 const
