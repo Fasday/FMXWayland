@@ -2,8 +2,9 @@
   Copyright (c) 2026 Fasday. MIT license, see LICENSE. }
 
 /// <summary>The Wayland side of FMXWayland, independent of FMX: the connection and its globals, outputs, the event
-/// loop (display fd + eventfd for wake-ups + timers), windows (xdg_toplevel / xdg_popup surfaces painted through
-/// wl_shm buffers), pointer, keyboard (xkbcommon, key repeat, compose), cursors and the clipboard.</summary>
+/// loop (display fd + eventfd for wake-ups + timers + watched descriptors), windows (xdg_toplevel / xdg_popup
+/// surfaces painted through wl_shm buffers, exported with xdg-foreign for other clients' dialogs), pointer, keyboard
+/// (xkbcommon, key repeat, compose), cursors and the clipboard.</summary>
 /// <remarks>Everything runs on the main thread except TWlDisplay.Wake. FMXWayland.Fmux adapts this to the FMUX API
 /// that FMX for Linux calls.</remarks>
 unit FMXWayland.Platform;
@@ -16,7 +17,8 @@ uses
   System.SysUtils, System.Types, System.Classes, System.Generics.Collections, System.Generics.Defaults,
   FMXWayland.Wayland, FMXWayland.Protocol.Wayland, FMXWayland.Protocol.XdgShell,
   FMXWayland.Protocol.XdgDecorationUnstableV1, FMXWayland.Protocol.Viewporter, FMXWayland.Protocol.FractionalScaleV1,
-  FMXWayland.Protocol.CursorShapeV1, FMXWayland.Protocol.XdgActivationV1, FMXWayland.Xkb, FMXWayland.WaylandCursor;
+  FMXWayland.Protocol.CursorShapeV1, FMXWayland.Protocol.XdgActivationV1, FMXWayland.Protocol.XdgForeignUnstableV2,
+  FMXWayland.Xkb, FMXWayland.WaylandCursor;
 
 const
   /// <summary>Bits of the modifier and button state passed with input events (the values of FMUX_STATE_*).</summary>
@@ -197,7 +199,12 @@ type
     // The compositor switched the decorations (xdg-decoration) since the last configure: FMX's window rectangle
     // (with the decorations) changes even when the size stays.
     FDecoSwitched: Boolean;
+    // The toplevel exported with xdg-foreign (ExportToplevel), its handle, and how many users it has.
+    FExported: Pzxdg_exported_v2;
+    FExportHandle: string;
+    FExportCount: Integer;
     procedure CreateToplevelRole;
+    procedure DestroyExport;
     function DecoButtonAt(const AIndex: Integer): TWlDecoPart;
     function DecoButtonCount: Integer;
     procedure EnableCsd;
@@ -267,6 +274,12 @@ type
     /// <summary>Asks the compositor to activate (raise and focus) the window, with an xdg-activation token tied to the
     /// last input event; nothing happens without xdg_activation_v1 (the compositor may refuse anyway).</summary>
     procedure Activate;
+    /// <summary>Exports a shown toplevel with xdg-foreign (zxdg_exporter_v2) so that another client (a portal's
+    /// dialog) can make its window a child of it; returns the handle, or '' when the compositor lacks xdg-foreign.
+    /// Each call that returned a handle needs an UnexportToplevel.</summary>
+    function ExportToplevel: string;
+    /// <summary>Ends an ExportToplevel; the last one revokes the handle.</summary>
+    procedure UnexportToplevel;
     /// <summary>Marks a rectangle (logical coordinates) for repainting.</summary>
     procedure Invalidate(const ARect: TRectF);
     /// <summary>Marks the whole window for repainting.</summary>
@@ -331,6 +344,15 @@ type
     FProc: TProc;
   end;
 
+  /// <summary>A file descriptor the event loop watches (TWlDisplay.AddFdWatch).</summary>
+  TWlFdWatch = class
+  private
+    FId: NativeInt;
+    FFd: Integer;
+    FEvents: Int16;
+    FProc: TProc;
+  end;
+
   /// <summary>The connection to the compositor (one per process: WlDisplay).</summary>
   TWlDisplay = class
   private
@@ -351,6 +373,7 @@ type
     FCursorShapeManager: Pwp_cursor_shape_manager_v1;
     FDecorationManager: Pzxdg_decoration_manager_v1;
     FActivation: Pxdg_activation_v1;
+    FExporter: Pzxdg_exporter_v2;
     FGlobals: TStringList;
     FOutputs: TObjectList<TWlOutput>;
     FWindows: TList<TWlWindow>;
@@ -360,6 +383,8 @@ type
     FTerminated: Boolean;
     FTimers: TObjectDictionary<NativeInt, TWlTimer>;
     FNextTimerId: NativeInt;
+    FFdWatches: TObjectDictionary<NativeInt, TWlFdWatch>;
+    FNextFdWatchId: NativeInt;
     FAppId: string;
     // pointer
     FPointer: Pwl_pointer;
@@ -447,6 +472,11 @@ type
     /// <summary>A periodic timer of the loop; returns its id (never 0).</summary>
     function CreateTimer(const AIntervalMs: Integer; const AProc: TProc): NativeInt;
     function DestroyTimer(const AId: NativeInt): Boolean;
+    /// <summary>Watches a file descriptor in the event loop: AProc runs on the main thread, inside ProcessEvents,
+    /// while AFd has one of AEvents (POLLIN, POLLOUT) or an error; returns the id of the watch (never 0). The loop
+    /// polls it level-triggered: whoever watches must read (or remove the watch) when it is told.</summary>
+    function AddFdWatch(const AFd: Integer; const AEvents: Int16; const AProc: TProc): NativeInt;
+    function RemoveFdWatch(const AId: NativeInt): Boolean;
     /// <summary>Sets the pointer cursor (a System.UITypes TCursor value: crDefault, crIBeam, ...).</summary>
     procedure SetCursor(const ACursor: Integer);
     /// <summary>The primary output (at 0,0 or the first one), or nil.</summary>
@@ -886,6 +916,18 @@ end;
 
 const
   CActivationTokenListener: Txdg_activation_token_v1_listener = (done: ActivationTokenDone);
+
+procedure ExportedHandle(AData: Pointer; AZxdgExportedV2: Pzxdg_exported_v2; AHandle: PAnsiChar); cdecl;
+var
+  W: TWlWindow;
+begin
+  W := TWlWindow(AData);
+  if W.FExported = AZxdgExportedV2 then
+    W.FExportHandle := Utf8ToStr(AHandle);
+end;
+
+const
+  CExportedListener: Tzxdg_exported_v2_listener = (handle: ExportedHandle);
 
 {$ENDREGION}
 
@@ -2029,6 +2071,7 @@ end;
 
 procedure TWlWindow.DestroyRole;
 begin
+  DestroyExport;
   if FPopup <> nil then
   begin
     xdg_popup_destroy(FPopup);
@@ -2078,6 +2121,52 @@ begin
     xdg_activation_token_v1_set_surface(FActivationToken, FDisplay.FKeyboardWindow.FSurface);
   xdg_activation_token_v1_commit(FActivationToken);
   FDisplay.Flush;
+end;
+
+function TWlWindow.ExportToplevel: string;
+begin
+  Result := '';
+  if (FDisplay = nil) or (FDisplay.FExporter = nil) or (FToplevel = nil) or not FVisible then
+    Exit;
+  if FExported = nil then
+  begin
+    FExportHandle := '';
+    FExported := zxdg_exporter_v2_export_toplevel(FDisplay.FExporter, FSurface);
+    zxdg_exported_v2_add_listener(FExported, @CExportedListener, Self);
+    // The compositor sends the handle right away: one roundtrip (it dispatches only Wayland events, no timers).
+    wl_display_roundtrip(FDisplay.FDisplay);
+    FDisplay.CheckConnection;
+  end;
+  if (FExported = nil) or (FExportHandle = '') then
+  begin
+    WlLog(TWlLogLevel.Warning, 'xdg-foreign: no handle for "%s"', [FTitle]);
+    DestroyExport;
+    Exit;
+  end;
+  Inc(FExportCount);
+  WlLog(TWlLogLevel.Debug, 'exported "%s" as %s', [FTitle, FExportHandle]);
+  Result := FExportHandle;
+end;
+
+procedure TWlWindow.UnexportToplevel;
+begin
+  if FExportCount > 0 then
+    Dec(FExportCount);
+  if FExportCount = 0 then
+    DestroyExport;
+end;
+
+procedure TWlWindow.DestroyExport;
+begin
+  FExportCount := 0;
+  FExportHandle := '';
+  if FExported <> nil then
+  begin
+    zxdg_exported_v2_destroy(FExported);
+    FExported := nil;
+    if FDisplay <> nil then
+      FDisplay.Flush;
+  end;
 end;
 
 procedure TWlWindow.Show;
@@ -2526,6 +2615,7 @@ begin
   FOutputs := TObjectList<TWlOutput>.Create(True);
   FWindows := TList<TWlWindow>.Create;
   FTimers := TObjectDictionary<NativeInt, TWlTimer>.Create([doOwnsValues]);
+  FFdWatches := TObjectDictionary<NativeInt, TWlFdWatch>.Create([doOwnsValues]);
   FOffers := TObjectDictionary<Pwl_data_offer, TWlDataOffer>.Create([doOwnsValues]);
   FWakeFd := -1;
   FRepeatRate := 25;
@@ -2583,6 +2673,7 @@ begin
     xkb_context_unref(FXkbContext);
   CloseFd(FWakeFd);
   FOffers.Free;
+  FFdWatches.Free;
   FTimers.Free;
   FWindows.Free;
   FOutputs.Free;
@@ -2672,7 +2763,9 @@ begin
   else if AInterface = 'zxdg_decoration_manager_v1' then
     FDecorationManager := wl_registry_bind(FRegistry, AName, @zxdg_decoration_manager_v1_interface, 1)
   else if AInterface = 'xdg_activation_v1' then
-    FActivation := wl_registry_bind(FRegistry, AName, @xdg_activation_v1_interface, 1);
+    FActivation := wl_registry_bind(FRegistry, AName, @xdg_activation_v1_interface, 1)
+  else if AInterface = 'zxdg_exporter_v2' then
+    FExporter := wl_registry_bind(FRegistry, AName, @zxdg_exporter_v2_interface, 1);
   // Globals can come late (WSLg adds the seat when its RDP client connects).
   if (FDataDevice = nil) and (FDataDeviceManager <> nil) and (FSeat <> nil) then
   begin
@@ -2818,6 +2911,27 @@ begin
     FTimers.Remove(AId);
 end;
 
+function TWlDisplay.AddFdWatch(const AFd: Integer; const AEvents: Int16; const AProc: TProc): NativeInt;
+var
+  W: TWlFdWatch;
+begin
+  Inc(FNextFdWatchId);
+  W := TWlFdWatch.Create;
+  W.FId := FNextFdWatchId;
+  W.FFd := AFd;
+  W.FEvents := AEvents;
+  W.FProc := AProc;
+  FFdWatches.Add(W.FId, W);
+  Result := W.FId;
+end;
+
+function TWlDisplay.RemoveFdWatch(const AId: NativeInt): Boolean;
+begin
+  Result := FFdWatches.ContainsKey(AId);
+  if Result then
+    FFdWatches.Remove(AId);
+end;
+
 function TWlDisplay.NextTimerDue: Int64;
 var
   T: TWlTimer;
@@ -2887,8 +3001,11 @@ end;
 
 function TWlDisplay.ProcessEvents(const ATimeoutMs: Integer): Boolean;
 var
-  Fds: array[0..1] of TPollFd;
-  Timeout, N: Integer;
+  Fds: array of TPollFd;
+  WatchIds: TArray<NativeInt>;
+  Watch: TWlFdWatch;
+  Proc: TProc;
+  Timeout, N, I: Integer;
   Due, Now: Int64;
   Readable: Boolean;
 begin
@@ -2923,13 +3040,23 @@ begin
     if (Timeout < 0) or (Due - Now < Timeout) then
       Timeout := Max(0, Integer(Min(Due - Now, Int64(MaxInt))));
   end;
+  // The display, the wake-up eventfd, and the descriptors of AddFdWatch.
+  WatchIds := FFdWatches.Keys.ToArray;
+  SetLength(Fds, 2 + Length(WatchIds));
   Fds[0].fd := wl_display_get_fd(FDisplay);
   Fds[0].events := POLLIN;
   Fds[0].revents := 0;
   Fds[1].fd := FWakeFd;
   Fds[1].events := POLLIN;
   Fds[1].revents := 0;
-  N := poll(@Fds[0], 2, Timeout);
+  for I := 0 to High(WatchIds) do
+  begin
+    Watch := FFdWatches[WatchIds[I]];
+    Fds[2 + I].fd := Watch.FFd;
+    Fds[2 + I].events := Watch.FEvents;
+    Fds[2 + I].revents := 0;
+  end;
+  N := poll(@Fds[0], Length(Fds), Timeout);
   Readable := (N > 0) and (Fds[0].revents and (POLLIN or POLLERR or POLLHUP) <> 0);
   if Readable then
   begin
@@ -2945,6 +3072,15 @@ begin
     if Assigned(FWakeProc) then
       FWakeProc();
   end;
+  if N > 0 then
+    for I := 0 to High(WatchIds) do
+      // A watch removed by the procedure of another one is not called.
+      if (Fds[2 + I].revents <> 0) and FFdWatches.TryGetValue(WatchIds[I], Watch) then
+      begin
+        Result := True;
+        Proc := Watch.FProc;
+        Proc();
+      end;
   if wl_display_dispatch_pending(FDisplay) > 0 then
     Result := True;
   if RunTimers then
