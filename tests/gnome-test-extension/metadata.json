@@ -1,0 +1,6 @@
+{
+  "uuid": "fmxw-test@fmxwayland",
+  "name": "FMXWayland test helper",
+  "description": "Turns on GNOME Shell's unsafe mode for tests\\compositors.ps1: org.gnome.Shell.Eval and org.gnome.Shell.Screenshot for any caller. Only for a private test session.",
+  "shell-version": ["50"]
+}

@@ -10,10 +10,12 @@ function ConvertTo-WslPath([string] $Path) {
 }
 
 # The checks of the self-test of samples\Hello as an ordered dictionary "<prefix>: <name>" -> passed. Scale is the
-# output scale the window had (1, 2, 1.5, ...): the buffer of the 700x540 window is that much larger.
-function Get-HelloSelfTestChecks([string] $Log, [string] $Prefix, [double] $Scale = 1) {
-  $bw = [int][Math]::Round(700 * $Scale)
-  $bh = [int][Math]::Round(540 * $Scale)
+# output scale the window had (1, 2, 1.5, ...): the buffer of the window (client area Width x Height, 700x540 unless
+# the compositor sizes it otherwise) is that much larger.
+function Get-HelloSelfTestChecks([string] $Log, [string] $Prefix, [double] $Scale = 1, [int] $Width = 700,
+  [int] $Height = 540) {
+  $bw = [int][Math]::Round($Width * $Scale)
+  $bh = [int][Math]::Round($Height * $Scale)
   $s = $Scale.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
   $nz = '[0-9A-F]*[1-9A-F][0-9A-F]*'
   [ordered]@{
@@ -26,7 +28,7 @@ function Get-HelloSelfTestChecks([string] $Log, [string] $Prefix, [double] $Scal
     "$($Prefix): combo drop-down closes" = $Log -match 'selftest: drop-down closed True'
     "$($Prefix): second form shown and freed" = $Log -match 'selftest: second form shown[\s\S]*selftest: second form freed'
     "$($Prefix): maximize" = $Log -match 'selftest: maximized True'
-    "$($Prefix): restore to 700x540" = $Log -match 'selftest: restored 700x540'
+    "$($Prefix): restore to ${Width}x${Height}" = $Log -match "selftest: restored ${Width}x${Height}"
     "$($Prefix): modal loop ended by a timer (mrRetry)" = $Log -match 'selftest: modal result 4'
     "$($Prefix): self-test done" = $Log -match 'selftest: done'
     "$($Prefix): clean exit" = $Log -match 'exit=0'

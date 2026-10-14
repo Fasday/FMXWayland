@@ -9,6 +9,7 @@
 *.inc     text eol=crlf
 *.fmx     text eol=crlf
 *.ps1     text eol=crlf
+*.psm1    text eol=crlf
 *.bat     text eol=crlf
 *.cmd     text eol=crlf
 
@@ -16,6 +17,9 @@
 *.md      text eol=lf
 *.xml     text eol=lf
 *.sh      text eol=lf
+*.py      text eol=lf
+*.js      text eol=lf
+*.json    text eol=lf
 
 *.res     binary
 *.png     binary
