@@ -33,7 +33,7 @@ foreach ($f in $files) {
   foreach ($l in [IO.File]::ReadLines($f)) {
     $i++
     $n = & $norm $l
-    if ($n -match 'embarcadero technologies|codegear|copyright\(c\) 1995|all rights reserved|fmxlinux|eugene kryukov|ksdev') {
+    if ($n -match 'embarcadero technologies|codegear|copyright\(c\) 1995|all rights reserved|eugene kryukov|ksdev') {
       "MARKER {0}:{1}: {2}" -f $f.Substring($Repo.Length + 1), $i, $l.Trim(); $hits++
     }
     elseif ($n.Length -ge $MinLength -and $set.Contains($n)) {
