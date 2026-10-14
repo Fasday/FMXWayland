@@ -281,7 +281,9 @@ the check read the client size while sway was still giving it back after the dec
 takes any size there, as for sway and KWin). Again with the final build: sway 1, sway `border csd` 1, KWin 1, GNOME
 Shell 1 and 1.5: 572 passed, 16 not applicable, none failed (on the way a double click injected too slowly and a
 screenshot taken before the nested KWin showed a popup failed once each; the test does both more robustly now);
-`tests\weston-headless.ps1` with both canvases: 85 and 87 checks passed. KWin's `--virtual` backend renders with QPainter, and its
+`tests\weston-headless.ps1` with both canvases: 85 and 87 checks passed. After the fix of `SetDecorated` before the
+first show (and its checks: the window opens at the program's size): sway 1, KWin 1, GNOME Shell 1 and 1.5: 482
+passed, 8 not applicable, none failed; `tests\weston-headless.ps1`: 137 (Skia) and 139 (cairo) passed. KWin's `--virtual` backend renders with QPainter, and its
 screenshot interface (`org.kde.KWin.ScreenShot2`) needs OpenGL, which WSL cannot give it (no DRM render node): the
 test runs KWin nested in a headless sway (KWin's Wayland backend, its window fullscreen there; KWin takes the host
 output's scale), and KWin `--virtual` for the self-test alone. GNOME Shell runs with a test extension
