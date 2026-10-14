@@ -18,7 +18,10 @@ param(
   [ValidateSet('Screen', 'Print')] [string] $Mode = 'Screen',
   [int] $TimeoutSec = 20,
   [switch] $Exact,
-  [switch] $Activate
+  [switch] $Activate,
+  # Pixels added to the captured rectangle on the right and at the bottom (popups next to the window).
+  [int] $ExtendRight = 0,
+  [int] $ExtendBottom = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,8 +75,8 @@ if ($Activate) { [void][FwCapture]::SetForegroundWindow($hwnd); Start-Sleep -Mil
 $r = New-Object FwCapture+RECT
 # DWMWA_EXTENDED_FRAME_BOUNDS (9): the visible bounds without the invisible resize borders.
 if ([FwCapture]::DwmGetWindowAttribute($hwnd, 9, [ref]$r, 16) -ne 0) { [void][FwCapture]::GetWindowRect($hwnd, [ref]$r) }
-$w = $r.Right - $r.Left
-$h = $r.Bottom - $r.Top
+$w = $r.Right - $r.Left + $ExtendRight
+$h = $r.Bottom - $r.Top + $ExtendBottom
 if ($w -le 0 -or $h -le 0) { throw "Window '$Title' has an empty rectangle" }
 $bmp = New-Object System.Drawing.Bitmap $w, $h
 $g = [System.Drawing.Graphics]::FromImage($bmp)

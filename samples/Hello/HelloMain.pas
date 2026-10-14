@@ -14,6 +14,8 @@ type
     procedure FormDestroy(Sender: TObject);
     procedure FormMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
     procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: Char; Shift: TShiftState);
+    procedure FormMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer;
+      var Handled: Boolean);
   private
     FVerbose: Boolean;
     FClicks: Integer;
@@ -35,6 +37,8 @@ type
     FClipLabel: TLabel;
     FSecondButton: TButton;
     FModalButton: TButton;
+    FMaximizeButton: TButton;
+    FResizeButton: TButton;
     FStatusLabel: TLabel;
     FAnimTimer: TTimer;
     FQuitTimer: TTimer;
@@ -44,12 +48,15 @@ type
     function AddButton(const AX, AY, AWidth: Single; const AText: string; const AOnClick: TNotifyEvent): TButton;
     procedure ClickButtonClick(Sender: TObject);
     procedure EditChangeTracking(Sender: TObject);
+    procedure EditKeyDown(Sender: TObject; var Key: Word; var KeyChar: Char; Shift: TShiftState);
     procedure ComboChange(Sender: TObject);
     procedure CheckChange(Sender: TObject);
     procedure CopyButtonClick(Sender: TObject);
     procedure PasteButtonClick(Sender: TObject);
     procedure SecondButtonClick(Sender: TObject);
     procedure ModalButtonClick(Sender: TObject);
+    procedure MaximizeButtonClick(Sender: TObject);
+    procedure ResizeButtonClick(Sender: TObject);
     procedure AnimTimerTimer(Sender: TObject);
     procedure QuitTimerTimer(Sender: TObject);
     procedure FormResize(Sender: TObject);
@@ -105,6 +112,8 @@ var
   Ani: TFloatAnimation;
   S: string;
 begin
+  // The log (stdout) is UTF-8 whatever the locale of the session.
+  SetTextCodePage(Output, CP_UTF8);
   QuitAfter := 0;
   for I := 1 to ParamCount do
   begin
@@ -170,6 +179,7 @@ begin
   FEdit.SetBounds(20, 245, 300, 26);
   FEdit.TextPrompt := 'Type here';
   FEdit.OnChangeTracking := EditChangeTracking;
+  FEdit.OnKeyDown := EditKeyDown;
   FEchoLabel := AddLabel(335, 248, 350, 'Echo: ');
 
   FCombo := TComboBox.Create(Self);
@@ -193,6 +203,8 @@ begin
 
   FSecondButton := AddButton(20, 390, 130, 'Second form', SecondButtonClick);
   FModalButton := AddButton(160, 390, 130, 'Modal form', ModalButtonClick);
+  FMaximizeButton := AddButton(300, 390, 130, 'Maximize', MaximizeButtonClick);
+  FResizeButton := AddButton(440, 390, 130, 'Resize 760x560', ResizeButtonClick);
 
   with AddLabel(20, 440, 660, 'FMXWayland: FMX on Wayland without libfmux and GTK; Skia raster canvas, wl_shm.') do
     TextSettings.FontColor := TAlphaColors.Gray;
@@ -221,7 +233,12 @@ end;
 
 procedure THelloForm.FormResize(Sender: TObject);
 begin
-  Log(Format('resize %.0fx%.0f', [ClientWidth * 1.0, ClientHeight * 1.0]));
+  Log(Format('resize %dx%d state %d', [ClientWidth, ClientHeight, Ord(WindowState)]));
+  if FMaximizeButton <> nil then
+    if WindowState = TWindowState.wsMaximized then
+      FMaximizeButton.Text := 'Restore'
+    else
+      FMaximizeButton.Text := 'Maximize';
 end;
 
 procedure THelloForm.FormMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
@@ -237,6 +254,13 @@ begin
     Log(Format('key down vk=%d char=#%d', [Key, Ord(KeyChar)]));
 end;
 
+procedure THelloForm.FormMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer;
+  var Handled: Boolean);
+begin
+  FSpinner.RotationAngle := FSpinner.RotationAngle + WheelDelta / 12;
+  Log(Format('wheel %d', [WheelDelta]));
+end;
+
 procedure THelloForm.ClickButtonClick(Sender: TObject);
 begin
   Inc(FClicks);
@@ -248,6 +272,12 @@ procedure THelloForm.EditChangeTracking(Sender: TObject);
 begin
   FEchoLabel.Text := 'Echo: ' + FEdit.Text;
   Log('edit "' + FEdit.Text + '"');
+end;
+
+procedure THelloForm.EditKeyDown(Sender: TObject; var Key: Word; var KeyChar: Char; Shift: TShiftState);
+begin
+  Log(Format('edit key vk=%d char=#%d ctrl=%s shift=%s', [Key, Ord(KeyChar), BoolToStr(ssCtrl in Shift, True),
+    BoolToStr(ssShift in Shift, True)]));
 end;
 
 procedure THelloForm.ComboChange(Sender: TObject);
@@ -380,6 +410,22 @@ begin
   finally
     F.Free;
   end;
+end;
+
+procedure THelloForm.MaximizeButtonClick(Sender: TObject);
+begin
+  if WindowState = TWindowState.wsMaximized then
+    WindowState := TWindowState.wsNormal
+  else
+    WindowState := TWindowState.wsMaximized;
+  Log('window state ' + IntToStr(Ord(WindowState)));
+end;
+
+procedure THelloForm.ResizeButtonClick(Sender: TObject);
+begin
+  ClientWidth := 760;
+  ClientHeight := 560;
+  Log(Format('resized by code to %dx%d', [ClientWidth, ClientHeight]));
 end;
 
 procedure THelloForm.AnimTimerTimer(Sender: TObject);

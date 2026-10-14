@@ -2591,6 +2591,24 @@ begin
     FModState := FModState or WL_STATE_SUPER;
 end;
 
+/// The WL_STATE_* bit of a modifier key (0 for other keys). The compositor reports a modifier's own change after
+/// the key event; FMX (like Windows) expects Ctrl in the shift state of the Ctrl key's press and not in its release.
+function ModifierBit(const AKeysym: UInt32): Integer;
+begin
+  case AKeysym of
+    $FFE1, $FFE2:
+      Result := WL_STATE_SHIFT;
+    $FFE3, $FFE4:
+      Result := WL_STATE_CTRL;
+    $FFE7..$FFEA:
+      Result := WL_STATE_ALT;
+    $FFEB..$FFEE:
+      Result := WL_STATE_SUPER;
+  else
+    Result := 0;
+  end;
+end;
+
 function Utf32ToStr(const AValue: UInt32): string;
 begin
   if AValue < $10000 then
@@ -2650,7 +2668,7 @@ begin
   if Text = '' then
   begin
     if Vk <> 0 then
-      W.DoKey(TWlKeyEvent.Down, Vk, #0, FModState);
+      W.DoKey(TWlKeyEvent.Down, Vk, #0, FModState or ModifierBit(Sym));
   end
   else
   begin
@@ -2698,7 +2716,7 @@ begin
     if W <> nil then
     begin
       Sym := xkb_state_key_get_one_sym(FXkbState, AKey + 8);
-      W.DoKey(TWlKeyEvent.Up, KeyToVirtualKey(Sym, AKey), #0, FModState);
+      W.DoKey(TWlKeyEvent.Up, KeyToVirtualKey(Sym, AKey), #0, FModState and not ModifierBit(Sym));
     end;
   end;
 end;
@@ -2824,6 +2842,7 @@ begin
     WlLogOnce('clipboard', 'the compositor offers no wl_data_device_manager: no clipboard');
     Exit;
   end;
+  WlLog(TWlLogLevel.Debug, 'clipboard: set %d characters (serial %d)', [Length(AText), FLastInputSerial]);
   Src := wl_data_device_manager_create_data_source(FDataDeviceManager);
   wl_data_source_add_listener(Src, @CDataSourceListener, Self);
   for M in CTextMimeTypes do

@@ -11,5 +11,6 @@ object HelloForm: THelloForm
   OnDestroy = FormDestroy
   OnMouseMove = FormMouseMove
   OnKeyDown = FormKeyDown
+  OnMouseWheel = FormMouseWheel
   DesignerMasterStyle = 0
 end
