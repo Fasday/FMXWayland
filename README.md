@@ -63,7 +63,8 @@ includes them, like a frame on other platforms. `FMXWAYLAND_CSD=0` turns them of
   the generated interface must be the one those precompiled FMX units were compiled with. `gen-fmux-api.ps1 -Source`
   overrides it.
 - A Linux platform SDK to link against: `tools\make-linux-sdk.ps1` makes one from a WSL distribution (or use the
-  IDE's SDK manager).
+  IDE's SDK manager). The default is Ubuntu 22.04's: programs need glibc 2.35 or later (Ubuntu 22.04+, Debian 12+,
+  Fedora 36+, ...; see [Tests](#tests), `tests\glibc-compat.ps1`).
 - At run time: a Wayland compositor with `wl_compositor`, `wl_shm` and `xdg_wm_base`; the libraries
   libwayland-client0 and libxkbcommon0 (libwayland-cursor0 for cursors on compositors without cursor-shape-v1);
   `libsk4d.so` (Skia, `$(BDS)\Redist\linux64`) next to the program. No GTK, no X11, no libfmux.
@@ -90,9 +91,17 @@ Nothing else changes in the program. `samples\Hello\Hello.dproj` does this with 
 ## Building
 
 ```powershell
-.\tools\make-linux-sdk.ps1 -Sdk D:\LinuxSDK\ubuntu-26.04 -Install   # once: libc, crt*.o, libgcc of the WSL distribution
-.\tools\build.ps1 -Project samples\Hello\Hello.dpr                   # Release; -Config Debug
+.\tools\make-linux-sdk.ps1 -CreateDistro -Install    # once: libc, crt*.o, libgcc, libz of Ubuntu 22.04 (WSL)
+.\tools\build.ps1 -Project samples\Hello\Hello.dpr   # Release; -Config Debug
 ```
+
+The SDK decides the oldest glibc the program runs with. `make-linux-sdk.ps1` copies it out of a WSL distribution
+(default `Ubuntu-22.04` into `D:\LinuxSDK\ubuntu-22.04`; `-CreateDistro` installs the distribution first when it is
+missing, without the first-run prompt: `wsl --install -d Ubuntu-22.04 --no-launch --web-download --location
+D:\WSL\Ubuntu-22.04`; `-Install` installs `libc6-dev`, `libgcc-<n>-dev` and `zlib1g-dev` in it). Linked against it,
+Hello needs `GLIBC_2.34` at most and `libsk4d.so` `GLIBC_2.29`. Another SDK stays selectable:
+`make-linux-sdk.ps1 -Distro Ubuntu-26.04 -Install` makes `D:\LinuxSDK\ubuntu-26.04` (glibc 2.43), `build.ps1 -Sdk
+D:\LinuxSDK\ubuntu-26.04` links against it.
 
 `build.ps1` generates `FMUX.Api.pas` into `<BuildRoot>\gen`, compiles with `dcclinux64` (linking with its lld against
 the SDK: `--syslibroot`, `--libpath`), copies `libsk4d.so` next to the program. Everything goes to `-BuildRoot`
@@ -132,8 +141,15 @@ Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not imp
   interactive desktop nobody else is using (it takes the mouse for about a minute).
 - `tests\weston-headless.ps1` — non-interactive: the sample on a private headless Weston 14 at output scale 1 and
   2 (buffer size through `IFMXWaylandNativeWindow`, the program's frame dump, a compositor screenshot, clean exit).
+- `tests\glibc-compat.ps1` — the glibc symbol versions Hello and `libsk4d.so` need (`objdump -T`, at most 2.35),
+  then Hello's self-test on the headless Weston of other distributions in Docker containers (no screen, no GPU;
+  images with the run-time libraries, built once as `fmxwayland-compat:<image>`): `ubuntu:22.04` (glibc 2.35,
+  Weston 9), `debian:12` (glibc 2.36, Weston 10), `fedora:latest` (Fedora 44, glibc 2.43, Weston 15) by default;
+  `-Images` takes others. Needs Docker Desktop (Linux containers). On glibc 2.31 (Debian 11) the loader refuses the
+  program (`GLIBC_2.34 not found`).
 
-Evidence of the last runs: all checks of both passed (WSLg on Windows 11 with Ubuntu 26.04, Weston 14.0.2 headless);
+Evidence of the last runs: all checks of the first two passed (WSLg on Windows 11 with Ubuntu 26.04, Weston 14.0.2
+headless), and all of `glibc-compat.ps1` with the program linked against the Ubuntu 22.04 SDK (2026-10-14);
 `Hello --selftest` also runs to the end on WSLg (its seat appears only after the RDP client connects, a second or so
 after the program starts: the clipboard falls back to a process-local one until then).
 

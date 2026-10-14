@@ -12,8 +12,14 @@ RT=$(mktemp -d /tmp/fmxw-rt.XXXXXX)
 chmod 700 "$RT"
 export XDG_RUNTIME_DIR="$RT"
 unset DISPLAY WAYLAND_DISPLAY
-# --debug exposes weston_screenshooter to clients.
-weston --backend=headless --renderer=pixman --width=1280 --height=800 --scale="$SCALE" --socket=fmxw-test \
+# --debug exposes weston_screenshooter to clients. Weston before 12 (Ubuntu 22.04: 9, Debian 12: 10) knows only the
+# module name of the backend and --use-pixman (its headless backend draws nothing otherwise).
+if weston --help 2>&1 | grep -q -- '--renderer='; then
+  WARGS="--backend=headless --renderer=pixman"
+else
+  WARGS="--backend=headless-backend.so --use-pixman"
+fi
+weston $WARGS --width=1280 --height=800 --scale="$SCALE" --socket=fmxw-test \
   --idle-time=0 --debug --log="$OUT/weston.log" 2> "$OUT/weston.stderr" &
 WPID=$!
 i=0

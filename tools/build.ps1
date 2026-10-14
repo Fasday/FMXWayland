@@ -7,8 +7,10 @@
   2. Compiles the project with dcclinux64; the unit path starts with <BuildRoot>\gen and src, so the compiler uses the
      generated FMUX.Api instead of Embarcadero's precompiled one (which loads libfmux).
   3. Links against a Linux platform SDK: a copy of a Linux system's libraries (see README.md, "Building"; the default is the
-     SDK that FMXFastCanvas's tools\make-linux-sdk.ps1 makes from the WSL distribution Ubuntu-26.04). dcclinux64 links
-     with LLVM lld; --syslibroot is the SDK, --libpath the folders with libc, crt*.o, libgcc and Delphi's librtlhelper.
+     SDK tools\make-linux-sdk.ps1 makes from the WSL distribution Ubuntu-22.04: glibc 2.35, so the program runs on Ubuntu
+     22.04 and later, Debian 12, Fedora, ...; -Sdk D:\LinuxSDK\ubuntu-26.04 links against Ubuntu 26.04, glibc 2.43).
+     dcclinux64 links with LLVM lld; --syslibroot is the SDK, --libpath the folders with libc, crt*.o, libgcc and Delphi's
+     librtlhelper.
   4. Copies libsk4d.so (Skia, from $(BDS)\Redist\linux64) next to the program.
 
   All output goes to <BuildRoot> (default D:\Work\FMXWayland-build): bin\Linux64\<Config>\<Name>,
@@ -24,7 +26,7 @@ param(
   [string[]] $SearchPath = @(),
   [string[]] $Define = @(),
   [string] $BuildRoot = 'D:\Work\FMXWayland-build',
-  [string] $Sdk = 'D:\LinuxSDK\ubuntu-26.04',
+  [string] $Sdk = 'D:\LinuxSDK\ubuntu-22.04',
   # Delphi's folder; '' = from the registry (RootDir of 37.0).
   [string] $Bds = ''
 )

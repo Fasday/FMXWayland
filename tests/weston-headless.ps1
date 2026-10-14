@@ -15,50 +15,23 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Drawing
-function WslPath([string] $p) { '/mnt/' + $p.Substring(0, 1).ToLower() + $p.Substring(2).Replace('\', '/') }
+Import-Module (Join-Path $PSScriptRoot 'HelloChecks.psm1') -Force
 
-$Root = Split-Path $PSScriptRoot -Parent
 $exe = Join-Path $BuildRoot "bin\Linux64\$Config\Hello"
 if (-not (Test-Path $exe)) { throw "No $exe (build it first)" }
 $failed = 0
 foreach ($scale in 1, 2) {
   $out = Join-Path $BuildRoot "shots\weston-scale$scale"
   if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-  wsl -d $Distro -u root -- sh (WslPath (Join-Path $PSScriptRoot 'weston-headless.sh')) (WslPath $out) $scale `
-    (WslPath $exe) --selftest --quit-after=25 2>&1 | Out-Null
+  wsl -d $Distro -u root -- sh (ConvertTo-WslPath (Join-Path $PSScriptRoot 'weston-headless.sh')) (ConvertTo-WslPath $out) `
+    $scale (ConvertTo-WslPath $exe) --selftest --quit-after=25 2>&1 | Out-Null
   $log = Get-Content (Join-Path $out 'program.log') -Raw -Encoding UTF8
-  $bw = 700 * $scale
-  $bh = 540 * $scale
-  $checks = [ordered]@{
-    "scale $($scale): window created" = $log -match '\[hello\] created'
-    "scale $($scale): native buffer ${bw}x${bh}" = $log -match "native: display=[0-9A-F]*[1-9A-F][0-9A-F]* surface=[0-9A-F]*[1-9A-F][0-9A-F]* buffer=${bw}x${bh} scale=$scale"
-    "scale $($scale): clean exit" = $log -match 'exit=0'
-    "scale $($scale): compositor screenshot" = [bool](Get-ChildItem $out -Filter 'wayland-screenshot*.png')
-    "scale $($scale): TThread.Synchronize from a thread" = $log -match 'selftest: synchronize from a thread, on the main thread True'
-    "scale $($scale): TThread.Queue from a thread" = $log -match 'selftest: queue from a thread, on the main thread True'
-    "scale $($scale): clipboard round trip" = $log -match ('selftest: clipboard "selftest clipboard ' + [char]0x2713 + '"')
-    "scale $($scale): combo drop-down (xdg_popup) opens" = $log -match 'selftest: drop-down open True'
-    "scale $($scale): combo drop-down closes" = $log -match 'selftest: drop-down closed True'
-    "scale $($scale): second form shown and freed" = $log -match 'selftest: second form shown[\s\S]*selftest: second form freed'
-    "scale $($scale): maximize" = $log -match 'selftest: maximized True'
-    "scale $($scale): restore to 700x540" = $log -match 'selftest: restored 700x540'
-    "scale $($scale): modal loop ended by a timer (mrRetry)" = $log -match 'selftest: modal result 4'
-    "scale $($scale): self-test done" = $log -match 'selftest: done'
-  }
-  # The program's own frame dump (BMP, top-down) -> PNG.
-  $dump = Get-ChildItem $out -Filter 'FMXWaylandHello-*.bmp' | Select-Object -First 1
-  $checks["scale $($scale): frame dump ${bw}x${bh}"] = $false
-  if ($dump) {
-    $img = [System.Drawing.Image]::FromFile($dump.FullName)
-    $checks["scale $($scale): frame dump ${bw}x${bh}"] = ($img.Width -eq $bw) -and ($img.Height -eq $bh)
-    $img.Save((Join-Path $out 'frame.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-    $img.Dispose()
-  }
-  foreach ($k in $checks.Keys) {
-    $s = if ($checks[$k]) { 'PASS' } else { $failed++; 'FAIL' }
-    Write-Host "$s  $k"
-  }
+  $checks = Get-HelloSelfTestChecks $log "scale $scale" $scale
+  $checks["scale $($scale): compositor screenshot"] = [bool](Get-ChildItem $out -Filter 'wayland-screenshot*.png')
+  $size = Convert-HelloFrameDump $out
+  $checks["scale $($scale): frame dump $(700 * $scale)x$(540 * $scale)"] = ($null -ne $size) -and
+    ($size.Width -eq 700 * $scale) -and ($size.Height -eq 540 * $scale)
+  $failed += Write-Checks $checks
 }
 if ($failed -gt 0) { Write-Host "$failed check(s) failed"; exit 1 }
 Write-Host 'All checks passed'
