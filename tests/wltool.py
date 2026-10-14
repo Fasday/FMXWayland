@@ -19,7 +19,8 @@ the compositor itself, or the one hosting a nested KWin), SWAYSOCK, KWIN_LOG (KW
 ("<w> <h>": the logical size of the output, for absolute pointer motion on wlroots).
 
 Commands (coordinates in logical pixels of the layout):
-  move X Y | down [left|right|middle] | up [..] | click [..] | wheel N (notches, + = towards the user)
+  move X Y | down [left|right|middle] | up [..] | click [..] | dclick [..] (double click)
+  wheel N (notches, + = towards the user)
   key NAME[+NAME...] (ctrl+a, backspace, home, alt+f4, ...) | type TEXT (US layout: a-z A-Z 0-9 space .,-/=)
   copy TEXT | paste                     the clipboard as another application
   geometry TITLE                        "x y w h" of the window's geometry (with client-side decorations if any)
@@ -666,11 +667,16 @@ def run(inp, wm, line):
         inp.move(float(a[0]), float(a[1]))
     elif cmd in ('down', 'up'):
         inp.button(a[0] if a else 'left', cmd == 'down')
-    elif cmd == 'click':
-        inp.button(a[0] if a else 'left', True)
-        inp.sync()
-        time.sleep(0.05)
-        inp.button(a[0] if a else 'left', False)
+    elif cmd in ('click', 'dclick'):
+        # dclick: two clicks well within a double click's time.
+        for n in range(2 if cmd == 'dclick' else 1):
+            if n:
+                inp.sync()
+                time.sleep(0.08)
+            inp.button(a[0] if a else 'left', True)
+            inp.sync()
+            time.sleep(0.04)
+            inp.button(a[0] if a else 'left', False)
     elif cmd == 'wheel':
         inp.wheel(int(a[0]))
     elif cmd == 'key':

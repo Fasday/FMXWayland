@@ -275,9 +275,13 @@ its log, the compositor's view of the windows and screenshots:
 | Own title bar: the compositor's window menu, minimize | — | n/a | n/a | pass | pass |
 
 Last run (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK): 14 runs (Weston 1,
-2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2, 1.5), 1368 checks
-passed, 40 not applicable (maximize, minimize and the window menu on sway), none failed (two checks of sway's
-`border csd` runs were then made to accept the client size sway gives while it switches the decorations back). KWin's `--virtual` backend renders with QPainter, and its
+2; sway 1, 2, 1.5; sway `border csd` 1, 1.5; KWin 1, 2, 1.5; KWin `--virtual` 1; GNOME Shell 1, 2, 1.5), 1366 checks
+passed, 40 not applicable (maximize, minimize and the window menu on sway), 2 failed: in both sway `border csd` runs
+the check read the client size while sway was still giving it back after the decorations went again (the check now
+takes any size there, as for sway and KWin). Again with the final build: sway 1, sway `border csd` 1, KWin 1, GNOME
+Shell 1 and 1.5: 572 passed, 16 not applicable, none failed (on the way a double click injected too slowly and a
+screenshot taken before the nested KWin showed a popup failed once each; the test does both more robustly now);
+`tests\weston-headless.ps1` with both canvases: 85 and 87 checks passed. KWin's `--virtual` backend renders with QPainter, and its
 screenshot interface (`org.kde.KWin.ScreenShot2`) needs OpenGL, which WSL cannot give it (no DRM render node): the
 test runs KWin nested in a headless sway (KWin's Wayland backend, its window fullscreen there; KWin takes the host
 output's scale), and KWin `--virtual` for the self-test alone. GNOME Shell runs with a test extension
@@ -428,7 +432,9 @@ states from the listener. What the compositors do with it ([Compositors](#compos
 | Minimize, shown again by the compositor | — | n/a (no minimize) | pass | pass |
 | Decorations back (`SetDecorated(True)`) and off again | pass: FMXWayland's title bar, same outer size | pass: sway's; sway keeps the outer size of the floating window, the client area stays smaller by its title bar | pass: Breeze; likewise | pass: FMXWayland's |
 
-![Own title bar on GNOME Shell with its window menu](docs/screenshots/gnome-own-titlebar-menu.png)
+| GNOME Shell 50: the program's title bar, GNOME Shell's window menu after a right click on it | KWin 6.6: likewise, KWin's window menu |
+|---|---|
+| ![GNOME Shell](docs/screenshots/gnome-own-titlebar-menu.png) | ![KWin](docs/screenshots/kwin-own-titlebar-menu.png) |
 
 ## Status
 

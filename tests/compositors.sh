@@ -224,8 +224,9 @@ if want frame-selftest; then
   (cd "$PDIR" && FMXWAYLAND_LOG=2 FMXWAYLAND_DUMP_DIR="$OUT/frame-selftest-frames" timeout 90 "$PROG" \
     --own-titlebar --selftest --quit-after=40 > "$PLOG" 2>&1; echo "exit=$?" >> "$PLOG") &
   SELF=$!
-  if wait_log 'selftest: drop-down open' 1 30; then
-    sleep 0.8
+  # (Once the compositor has configured the popup: it stays open about 3 seconds.)
+  if wait_log 'selftest: drop-down open' 1 30 && wait_log 'popup configure' 1 3; then
+    sleep 1.2
     shot frame-selftest-dropdown
   fi
   wait $SELF
@@ -489,7 +490,7 @@ drag() { # x y dx dy [kick] (relative to the window)
   sleep 0.2; t up; sleep 0.8
 }
 dclick() { # x y
-  fat "$1" "$2"; sleep 0.2; t click; sleep 0.1; t click; sleep 1
+  fat "$1" "$2"; sleep 0.2; t dclick; sleep 1
 }
 
 run_frame() {
