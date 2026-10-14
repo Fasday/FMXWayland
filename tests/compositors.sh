@@ -248,7 +248,7 @@ if phase selftest; then
 PLOG="$OUT/selftest.log"
 mkdir -p "$OUT/selftest-frames"
 (cd "$PDIR" && DBUS_SESSION_BUS_ADDRESS="$NOSVC" FMXWAYLAND_LOG=2 FMXWAYLAND_DUMP_DIR="$OUT/selftest-frames" \
-  timeout 90 "$PROG" --selftest --quit-after=50 > "$PLOG" 2>&1; echo "exit=$?" >> "$PLOG") &
+  timeout 120 "$PROG" --selftest --quit-after=90 > "$PLOG" 2>&1; echo "exit=$?" >> "$PLOG") &
 SELF=$!
 if wait_log 'selftest: drop-down open' 1 30; then
   sleep 0.4
@@ -281,6 +281,8 @@ origin() { # title [max]
 }
 at() { t move "$(calc "$CX + $1")" "$(calc "$CY + $2")"; }
 click_at() { at "$1" "$2"; sleep 0.15; t click; sleep 0.45; }
+# Waits until the shell takes no input itself (GNOME Shell's overview can still be up after a slow start).
+settle() { local i; for i in 1 2 3; do t settle; [ "$ANS" = settled ] && return 0; done; return 1; }
 # Waits until the compositor has a window of that title with a size (seconds).
 wait_window() { # title seconds
   local i=0
@@ -312,7 +314,7 @@ PLOG="$OUT/program.log"
 APP=$!
 check "window shown" wait_log 'FMXWayland: debug: configure "FMXWayland Hello": [1-9]' 1 30
 sleep 1
-t settle
+settle
 origin "$MAIN"
 case "$COMP" in
   kwin|sway) check "server-side decorations (xdg-decoration mode 2)" wait_log 'decoration mode 2' 1 1 ;;
@@ -453,8 +455,10 @@ dialog_origin() { # title: CX, CY and the client size DW x DH of a dialog window
 click_at 75 481
 check "file dialog without a portal: FMX's own" wait_log 'portal: no file dialog \(.*ServiceUnknown' 1 4
 # (The geometry a moment after the window appears: sway may still be adding its title bar or switching it to the
-# program's decorations.)
-if wait_window "Hello: open a file" 5 && sleep 0.8 && dialog_origin "Hello: open a file"; then
+# program's decorations, which takes longer.)
+DLG_SETTLE=0.8
+[ "$COMP" = sway-csd ] && DLG_SETTLE=2.5
+if wait_window "Hello: open a file" 5 && sleep $DLG_SETTLE && dialog_origin "Hello: open a file"; then
   shot 05a-fmx-open-dialog
   at 100 160; sleep 0.2; t click; sleep 0.08; t click
   if ! check "FMX file dialog: a double click opens a file" \
@@ -466,7 +470,7 @@ else
 fi
 CX=$MX; CY=$MY
 click_at 195 481
-if wait_window "Hello: save a file" 5 && sleep 0.8 && dialog_origin "Hello: save a file"; then
+if wait_window "Hello: save a file" 5 && sleep $DLG_SETTLE && dialog_origin "Hello: save a file"; then
   click_at 400 $((DH - 130))
   t key ctrl+a; t type "saved.txt"
   sleep 0.3
@@ -481,7 +485,7 @@ else
 fi
 CX=$MX; CY=$MY
 click_at 320 481
-if wait_window "Hello: select a folder" 5 && sleep 0.8 && dialog_origin "Hello: select a folder"; then
+if wait_window "Hello: select a folder" 5 && sleep $DLG_SETTLE && dialog_origin "Hello: select a folder"; then
   t key escape
   if ! check "FMX file dialog: Escape cancels" wait_log 'folder dialog result False' 1 3; then
     click_at $((DW - 235)) $((DH - 28))
@@ -598,9 +602,9 @@ for l in sys.stdin.buffer:
   APP=$!
   check "portal: window shown" wait_log 'FMXWayland: debug: configure "FMXWayland Hello": [1-9]' 1 30
   # sway with "border csd" switches the window to the program's decorations after it appears.
-  [ "$COMP" = sway-csd ] && wait_log 'decoration mode 1 of "FMXWayland Hello"' 1 5
+  [ "$COMP" = sway-csd ] && wait_log 'decoration mode 1 of "FMXWayland Hello"' 1 5 && sleep 2
   sleep 1
-  t settle
+  settle
   origin "$MAIN"
   MX=$CX; MY=$CY
   FOREIGN=0
