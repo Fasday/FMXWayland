@@ -2,7 +2,8 @@
   Copyright (c) 2026 Fasday. MIT license, see LICENSE.
 
   Implementations of the helper routines that the interface of FMUX.Api declares. Included by the FMUX.Api.pas that
-  tools\gen-fmux-api.ps1 generates (its implementation section). }
+  tools\gen-fmux-api.ps1 generates (its implementation section). The headers use the short form (no parameter list):
+  the parameters are those the interface declares, and nothing of it is repeated here. }
 
 type
   TFmuxStateBit = record
@@ -29,7 +30,7 @@ const
   CPrintOptionBits: array[TPrintDialogOption] of Integer = (FMUX_poPrintToFile, FMUX_poPageNums, FMUX_poSelection,
     FMUX_poWarning, FMUX_poHelp, FMUX_poDisablePrintToFile);
 
-function FmuxStateToShiftState(State: Integer): TShiftState;
+function FmuxStateToShiftState;
 var
   I: Integer;
 begin
@@ -39,7 +40,7 @@ begin
       Result := Result + CFmuxStateBits[I].Shift;
 end;
 
-function FmuxShiftStateToState(State: TShiftState): Integer;
+function FmuxShiftStateToState;
 var
   I: Integer;
 begin
@@ -49,7 +50,7 @@ begin
       Result := Result or CFmuxStateBits[I].Bit;
 end;
 
-function FmuxStateToButton(State: Integer): TMouseButton;
+function FmuxStateToButton;
 begin
   // The button of a press/release event: the state carries the bit of that button; right and middle win over left
   // (a release of the right button while the left one is held is a right-button release).
@@ -60,14 +61,14 @@ begin
     Result := TMouseButton.mbMiddle;
 end;
 
-function FmuxButtonToState(Button: TMouseButton): Integer;
+function FmuxButtonToState;
 const
   CButtonBits: array[TMouseButton] of Integer = (FMUX_STATE_LEFT, FMUX_STATE_RIGHT, FMUX_STATE_MIDDLE);
 begin
   Result := CButtonBits[Button];
 end;
 
-function MsgDlgButtonsToButtons(Btns: TMsgDlgButtons): Integer;
+function MsgDlgButtonsToButtons;
 var
   B: TMsgDlgBtn;
 begin
@@ -76,7 +77,7 @@ begin
     Result := Result or CMsgDlgBtnBits[B];
 end;
 
-function PrinterOptionToInt(AOptions: TPrintDialogOptions): Integer;
+function PrinterOptionToInt;
 var
   O: TPrintDialogOption;
 begin
