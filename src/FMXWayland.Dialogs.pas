@@ -62,8 +62,14 @@ type
       var FilterIndex: Integer): Boolean; override;
   end;
 
-  /// <summary>FMX's dialog services (TDialogService...) through an installed backend.</summary>
+  /// <summary>FMX's dialog services (TDialogService...) through an installed backend; the asynchronous ones are
+  /// queued and shown modally (a backend is synchronous).</summary>
   TWaylandDialogService = class(TInterfacedObject, IFMXDialogServiceSync, IFMXDialogServiceAsync)
+  private
+    class procedure QueueMessage(const AMessage: string; ADialogType: TMsgDlgType; AButtons: TMsgDlgButtons;
+      ADefaultButton: TMsgDlgBtn; const ADone: TInputCloseDialogProc); static;
+    class procedure QueueQuery(const ACaption: string; const APrompts, AValues: TArray<string>;
+      const ADone: TInputCloseQueryProc); static;
   public
     procedure ShowMessageSync(const AMessage: string);
     function MessageDialogSync(const AMessage: string; const ADialogType: TMsgDlgType;
@@ -249,139 +255,139 @@ end;
 
 {$REGION 'TWaylandDialogService'}
 
-procedure TWaylandDialogService.ShowMessageSync(const AMessage: string);
+class procedure TWaylandDialogService.QueueMessage(const AMessage: string; ADialogType: TMsgDlgType;
+  AButtons: TMsgDlgButtons; ADefaultButton: TMsgDlgBtn; const ADone: TInputCloseDialogProc);
+var
+  Backend: IFMXWaylandDialogBackend;
 begin
-  MessageDialogSync(AMessage, TMsgDlgType.mtCustom, [TMsgDlgBtn.mbOK], TMsgDlgBtn.mbOK, 0);
+  MessageDialogCheckInUIThread;
+  // The backend of now: a later SetWaylandDialogBackend does not change an already queued dialog.
+  Backend := GetWaylandDialogBackend;
+  TThread.ForceQueue(nil,
+    procedure
+    var
+      Answer: TModalResult;
+    begin
+      Answer := Backend.MessageDialog(AMessage, ADialogType, AButtons, ADefaultButton);
+      if Assigned(ADone) then
+        ADone(Answer);
+    end);
 end;
 
-function TWaylandDialogService.MessageDialogSync(const AMessage: string; const ADialogType: TMsgDlgType;
-  const AButtons: TMsgDlgButtons; const ADefaultButton: TMsgDlgBtn; const AHelpCtx: THelpContext): Integer;
+class procedure TWaylandDialogService.QueueQuery(const ACaption: string; const APrompts, AValues: TArray<string>;
+  const ADone: TInputCloseQueryProc);
 var
   Backend: IFMXWaylandDialogBackend;
 begin
   MessageDialogCheckInUIThread;
   Backend := GetWaylandDialogBackend;
-  Result := Backend.MessageDialog(AMessage, ADialogType, AButtons, ADefaultButton);
+  TThread.ForceQueue(nil,
+    procedure
+    var
+      Edited: TArray<string>;
+      Answer: TModalResult;
+    begin
+      Edited := Copy(AValues);
+      Answer := mrCancel;
+      if Backend.InputQuery(ACaption, APrompts, Edited) then
+      begin
+        if Length(Edited) <> Length(AValues) then
+          raise EArgumentException.Create('Dialog backend changed the value count');
+        Answer := mrOK;
+      end
+      else
+        Edited := Copy(AValues);
+      if Assigned(ADone) then
+        ADone(Answer, Edited);
+    end);
+end;
+
+procedure TWaylandDialogService.ShowMessageSync(const AMessage: string);
+begin
+  MessageDialogCheckInUIThread;
+  GetWaylandDialogBackend.MessageDialog(AMessage, TMsgDlgType.mtCustom, [TMsgDlgBtn.mbOK], TMsgDlgBtn.mbOK);
+end;
+
+function TWaylandDialogService.MessageDialogSync(const AMessage: string; const ADialogType: TMsgDlgType;
+  const AButtons: TMsgDlgButtons; const ADefaultButton: TMsgDlgBtn; const AHelpCtx: THelpContext): Integer;
+begin
+  MessageDialogCheckInUIThread;
+  Result := GetWaylandDialogBackend.MessageDialog(AMessage, ADialogType, AButtons, ADefaultButton);
 end;
 
 function TWaylandDialogService.InputQuerySync(const ACaption: string; const APrompts: array of string;
   var AValues: array of string): Boolean;
 var
-  Backend: IFMXWaylandDialogBackend;
-  Prompts, Values: TArray<string>;
+  Values: TArray<string>;
   I: Integer;
 begin
   MessageDialogCheckInUIThread;
-  Backend := GetWaylandDialogBackend;
-  Prompts := CopyStrings(APrompts);
   Values := CopyStrings(AValues);
-  Result := Backend.InputQuery(ACaption, Prompts, Values);
-  if Result then
-  begin
-    if Length(Values) <> Length(AValues) then
-      raise EArgumentException.Create('Dialog backend changed the value count');
-    for I := 0 to High(AValues) do
-      AValues[I] := Values[I];
-  end;
+  Result := GetWaylandDialogBackend.InputQuery(ACaption, CopyStrings(APrompts), Values);
+  if not Result then
+    Exit;
+  if Length(Values) <> Length(AValues) then
+    raise EArgumentException.Create('Dialog backend changed the value count');
+  for I := 0 to High(Values) do
+    AValues[I] := Values[I];
 end;
 
 procedure TWaylandDialogService.ShowMessageAsync(const AMessage: string);
-var
-  Callback: TInputCloseDialogProc;
 begin
-  Callback := nil;
-  ShowMessageAsync(AMessage, Callback);
+  QueueMessage(AMessage, TMsgDlgType.mtCustom, [TMsgDlgBtn.mbOK], TMsgDlgBtn.mbOK, nil);
 end;
 
 procedure TWaylandDialogService.ShowMessageAsync(const AMessage: string;
   const ACloseDialogProc: TInputCloseDialogProc);
 begin
-  MessageDialogAsync(AMessage, TMsgDlgType.mtCustom, [TMsgDlgBtn.mbOK], TMsgDlgBtn.mbOK, 0, ACloseDialogProc);
+  QueueMessage(AMessage, TMsgDlgType.mtCustom, [TMsgDlgBtn.mbOK], TMsgDlgBtn.mbOK, ACloseDialogProc);
 end;
 
 procedure TWaylandDialogService.ShowMessageAsync(const AMessage: string;
   const ACloseDialogEvent: TInputCloseDialogEvent; const AContext: TObject);
 begin
-  ShowMessageAsync(AMessage,
-    procedure(const R: TModalResult)
+  QueueMessage(AMessage, TMsgDlgType.mtCustom, [TMsgDlgBtn.mbOK], TMsgDlgBtn.mbOK,
+    procedure(const Answer: TModalResult)
     begin
       if Assigned(ACloseDialogEvent) then
-        ACloseDialogEvent(AContext, R);
+        ACloseDialogEvent(AContext, Answer);
     end);
 end;
 
 procedure TWaylandDialogService.MessageDialogAsync(const AMessage: string; const ADialogType: TMsgDlgType;
   const AButtons: TMsgDlgButtons; const ADefaultButton: TMsgDlgBtn; const AHelpCtx: THelpContext;
   const ACloseDialogProc: TInputCloseDialogProc);
-var
-  Backend: IFMXWaylandDialogBackend;
 begin
-  MessageDialogCheckInUIThread;
-  // A switch affects subsequent requests, not an already queued dialog.
-  Backend := GetWaylandDialogBackend;
-  TThread.ForceQueue(nil,
-    procedure
-    var
-      R: TModalResult;
-    begin
-      R := Backend.MessageDialog(AMessage, ADialogType, AButtons, ADefaultButton);
-      if Assigned(ACloseDialogProc) then
-        ACloseDialogProc(R);
-    end);
+  QueueMessage(AMessage, ADialogType, AButtons, ADefaultButton, ACloseDialogProc);
 end;
 
 procedure TWaylandDialogService.MessageDialogAsync(const AMessage: string; const ADialogType: TMsgDlgType;
   const AButtons: TMsgDlgButtons; const ADefaultButton: TMsgDlgBtn; const AHelpCtx: THelpContext;
   const ACloseDialogEvent: TInputCloseDialogEvent; const AContext: TObject);
 begin
-  MessageDialogAsync(AMessage, ADialogType, AButtons, ADefaultButton, AHelpCtx,
-    procedure(const R: TModalResult)
+  QueueMessage(AMessage, ADialogType, AButtons, ADefaultButton,
+    procedure(const Answer: TModalResult)
     begin
       if Assigned(ACloseDialogEvent) then
-        ACloseDialogEvent(AContext, R);
+        ACloseDialogEvent(AContext, Answer);
     end);
 end;
 
 procedure TWaylandDialogService.InputQueryAsync(const ACaption: string; const APrompts: array of string;
   const ADefaultValues: array of string; const ACloseDialogProc: TInputCloseQueryProc);
-var
-  Backend: IFMXWaylandDialogBackend;
-  Prompts, Values: TArray<string>;
 begin
-  MessageDialogCheckInUIThread;
-  Backend := GetWaylandDialogBackend;
-  Prompts := CopyStrings(APrompts);
-  Values := CopyStrings(ADefaultValues);
-  TThread.ForceQueue(nil,
-    procedure
-    var
-      R: TModalResult;
-      EditedValues: TArray<string>;
-    begin
-      EditedValues := Copy(Values);
-      if Backend.InputQuery(ACaption, Prompts, EditedValues) then
-      begin
-        if Length(EditedValues) <> Length(Values) then
-          raise EArgumentException.Create('Dialog backend changed the value count');
-        R := mrOK;
-        Values := EditedValues;
-      end
-      else
-        R := mrCancel;
-      if Assigned(ACloseDialogProc) then
-        ACloseDialogProc(R, Values);
-    end);
+  QueueQuery(ACaption, CopyStrings(APrompts), CopyStrings(ADefaultValues), ACloseDialogProc);
 end;
 
 procedure TWaylandDialogService.InputQueryAsync(const ACaption: string; const APrompts: array of string;
   const ADefaultValues: array of string; const ACloseQueryEvent: TInputCloseQueryWithResultEvent;
   const AContext: TObject);
 begin
-  InputQueryAsync(ACaption, APrompts, ADefaultValues,
-    procedure(const R: TModalResult; const Values: array of string)
+  QueueQuery(ACaption, CopyStrings(APrompts), CopyStrings(ADefaultValues),
+    procedure(const Answer: TModalResult; const Values: array of string)
     begin
       if Assigned(ACloseQueryEvent) then
-        ACloseQueryEvent(AContext, R, Values);
+        ACloseQueryEvent(AContext, Answer, Values);
     end);
 end;
 
