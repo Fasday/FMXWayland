@@ -12,8 +12,10 @@ windows, popups, mouse, keyboard, clipboard, timers, modal forms, message boxes,
 xdg-desktop-portal, FMX's own without one), HiDPI scale (integer and fractional), xdg-activation, server-side or
 client-side decorations or a title bar drawn by the program itself
 ([IFMXWaylandWindowFrame](#ifmxwaylandwindowframe-for-programs-with-their-own-title-bar)), the desktop's font as
-FMX's default, on both of FMX's Linux canvases (cairo/Pango and Skia). See [Dialogs](#dialogs),
-[Compositors](#compositors), [Status](#status) and [What does not work](#what-does-not-work-yet).
+FMX's default, on both of FMX's Linux canvases (cairo/Pango and Skia) and on
+[FastCanvas](#fastcanvas-vulkan), a GPU canvas that presents to the windows' surfaces through Vulkan
+(`VK_KHR_wayland_surface`). See [Dialogs](#dialogs), [Compositors](#compositors), [Status](#status) and
+[What does not work](#what-does-not-work-yet).
 
 ## How it works
 
@@ -43,6 +45,7 @@ implements what libfmux did:
 | `src\Protocols\FMXWayland.Protocol.*` | Generated from the protocol XML files in `protocols\` by `tools\gen-wayland.ps1`, a small wayland-scanner for Pascal |
 | `FMXWayland.Keys` | XKB keysyms / evdev codes -> FMX virtual keys |
 | `FMXWayland.Native` | `IFMXWaylandNativeWindow`, the contract for GPU canvases (below) |
+| `FMXWayland.FmuxLoad` | Calls `FMUX.Api.LoadLib` from `FMUX.Api`'s implementation uses, before FMX's units that call the FMUX functions initialize, whatever unit a program reaches first (the cycle `FMUX.Api` → `FMXWayland.Fmux` → FMX → `FMX.Platform.Linux` → `FMUX.Api` otherwise let `FMX.Platform.Linux` call `FmuxSetLog` while it was nil) |
 | `FMXWayland.Frame` | `IFMXWaylandWindowFrame`, the contract for programs that draw their own title bar (below) |
 | `FMXWayland.SystemFont` | FMX's `IFMXSystemFontService`: the default font of `TFont` (GNOME's `font-name` through the settings portal, else fontconfig's `sans-serif`) |
 
@@ -57,6 +60,10 @@ damaged rectangle and committed; frame callbacks pace the repaints.
   since its frame. Text is antialiased in grayscale (a Wayland client does not know the subpixel order of the screen).
 - **The Skia raster canvas** (`FMX.Skia`, `GlobalUseSkia := True`, `libsk4d.so` next to the program) gets the frame
   as its context, renders the window into an FMUX bitmap (plain memory) and copies it with `FmuxCanvasDrawBitmap`.
+- **A GPU canvas** that presents itself ([FastCanvas](#fastcanvas-vulkan): Vulkan through `VK_KHR_wayland_surface`)
+  takes the window's `wl_surface` through [IFMXWaylandNativeWindow](#ifmxwaylandnativewindow-contract-for-gpu-canvases)
+  and turns FMXWayland's frames off for it; FMXWayland keeps the window's viewport, geometry and decorations in step
+  with the commits of the canvas's presenting thread.
 
 The two draw the same layout; antialiasing, hinting and Pango's line spacing differ a little
 (`tests\canvas-check.ps1` puts both side by side, below).
@@ -173,12 +180,30 @@ portal's dialogs ask before overwriting whatever `ofOverwritePrompt` says (GTK a
 Nothing else changes in the program. `samples\Hello\Hello.dproj` does this with `..\..\gen` (generate with
 `-Out gen\FMUX.Api.pas`); Hello uses Skia unless it is built with the define `NOSKIA`.
 
+3. For [FastCanvas](#fastcanvas-vulkan) (Vulkan) instead: its folders after FMXWayland's on the search path, and in
+   the .dpr, as on any platform:
+
+   ```pascal
+   uses
+     System.StartUpCopy, FMX.Forms, FastCanvas.Device, FastCanvas.Canvas, FastCanvas.Context3DVk, ...;
+   begin
+     FastCanvasBackend := TFastCanvasBackend.Vulkan;
+     InstallFastCanvas;
+     InstallFastContext3DVk;
+     Application.Initialize;
+     ...
+   ```
+
+   Hello does this with the define `FASTCANVAS` (`samples\Hello\HelloFastCanvas.pas`).
+
 ## Building
 
 ```powershell
 .\tools\make-linux-sdk.ps1 -CreateDistro -Install    # once: libc, crt*.o, libgcc, libz of Ubuntu 22.04 (WSL)
 .\tools\build.ps1 -Project samples\Hello\Hello.dpr   # Release; -Config Debug
 .\tools\build.ps1 -Project samples\Hello\Hello.dpr -Define NOSKIA -BuildRoot D:\Work\FMXWayland-build\cairo
+.\tools\build.ps1 -Project samples\Hello\Hello.dpr -Define FASTCANVAS -BuildRoot D:\Work\FMXWayland-build\fastcanvas `
+  -SearchPath F:\Projects\FMXFastCanvas\src\Canvas,F:\Projects\FMXFastCanvas\third_party\pasvulkan\src
 ```
 
 The SDK decides the oldest glibc the program runs with. `make-linux-sdk.ps1` copies it out of a WSL distribution
@@ -237,7 +262,10 @@ Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not imp
   popups opened before their window is mapped (`Hello --early-popup`, `=paint`, `=create`: the drop-down and the
   window must both be on the screen, counted in the screenshot's pixels) and `Hello --own-titlebar --selftest` (the
   window frame service without input, no FMXWayland title bar in the screenshot). `-BuildRoot <root of a NOSKIA
-  build> -Canvas TLinuxCanvas` runs it on FMX's default canvas.
+  build> -Canvas TLinuxCanvas` runs it on FMX's default canvas, `-BuildRoot <root of a FASTCANVAS build> -Canvas
+  TFastCanvas` on FastCanvas (the frame dump is then the frame FastCanvas presented: FMXWayland has none of such a
+  window). The self-test also hides the second form and shows it again (the window configured twice), and fails on an
+  exception the program got (`Application.OnException` writes it to the log).
 - `tests\canvas-check.ps1` — builds `tests\CanvasCheck` for both canvases and runs them on headless Weston at scale 1
   and 2: the same drawing (gradients, opacity, dashes and caps, bitmap brushes, scaled and partial bitmaps, the PNG
   codec, text beyond the BMP, wrapping, alignment, trimming, styles, rotation, text as a path, a degenerate matrix),
@@ -268,7 +296,12 @@ headless), and all of `glibc-compat.ps1` with the program linked against the Ubu
 after the program starts: the clipboard falls back to a process-local one until then). With the dialogs and the
 window frame service merged and GNOME's font: `weston-headless.ps1` passed on both canvases (153 checks each: Skia,
 cairo), `dialog-check.ps1` 36, `canvas-check.ps1` 36, `glibc-compat.ps1` 74 (Ubuntu 22.04, Debian 12, Fedora 44);
-the end-to-end test on WSLg was not run again (it takes the Windows desktop).
+the end-to-end test on WSLg was not run again (it takes the Windows desktop). With FastCanvas (2026-10-14, after the
+changes for it): `weston-headless.ps1` 157 checks on each canvas (Skia, cairo, FastCanvas), `canvas-check.ps1` 36,
+`dialog-check.ps1` 36, all passed; `compositors.ps1` with FastCanvas 1028 passed (8 runs, all parts), with Skia 966
+(7 runs, all parts; GNOME Shell at 1.5 once more after its shell stayed busy and took no pointer input in the first
+run), with cairo 184 (sway, KWin, GNOME Shell at 1.5: self-test, own title bar, popups of unmapped windows), none
+failed.
 
 | | |
 |---|---|
@@ -364,6 +397,7 @@ portal`.
 | Own title bar with input: move, resize, activation, popup, close button | — | pass | pass | pass | pass |
 | Own title bar: maximize/restore by button and double click, back to size and place | — | n/a | n/a | pass | pass |
 | Own title bar: the compositor's window menu, minimize | — | n/a | n/a | pass | pass |
+| [FastCanvas](#fastcanvas-vulkan) (Vulkan, `VK_KHR_wayland_surface`): all of the above at 1, 2 (Weston), 1.5 | pass (1, 2) | pass (1, 1.5) | not run | pass (1, 1.5) | pass (1, 1.5) |
 
 Last run (2026-10-14, WSL 2 with Ubuntu 26.04, the program linked against the Ubuntu 22.04 SDK, with the dialogs and
 the window frame service merged and GNOME's font through the settings portal): 14 runs (Weston 1, 2; sway 1, 2, 1.5;
@@ -414,6 +448,54 @@ program's logs, screenshots, frame dumps) and `summary.md` there (the matrix of 
 | KWin 6.6 at 1.5 (server-side title bar, combo box popup) | GNOME Shell 50 at 1.5 (the program's title bars, modal form) | sway at 1.5 with `border csd` (only a close button: sway has no maximize) |
 |---|---|---|
 | ![KWin](docs/screenshots/kwin-scale1.5-combo.png) | ![GNOME Shell](docs/screenshots/gnome-scale1.5-modal.png) | ![sway](docs/screenshots/sway-csd-scale1.5-second-form.png) |
+## FastCanvas (Vulkan)
+
+[FastCanvas](https://github.com/Fasday/FMXFastCanvas) (FMX canvas and 3D context on Vulkan, Direct3D 11/12) runs on
+FMXWayland natively: its windows present to their `wl_surface`s through `VK_KHR_wayland_surface`, with no GTK, X11,
+Skia or libfmux. Neither project depends on the other: FastCanvas declares
+[IFMXWaylandNativeWindow](#ifmxwaylandnativewindow-contract-for-gpu-canvases) again and takes the Wayland path when
+the service is there (on FMX's GTK platform it presents to X11 windows as before).
+
+- Toplevel windows (forms, modal forms, dialogs, `TForm3D`): a Vulkan surface on the window's `wl_surface`, swap
+  chains of the buffer size FMXWayland reports, presented by a thread of FastCanvas (Mesa's WSI reads its own event
+  queue there), `MAILBOX` (else `IMMEDIATE`; never Wayland's `FIFO`, which blocks in the present on frame callbacks a
+  hidden window never gets). FMXWayland keeps calling FMX's paint; FMX paints when it invalidates.
+- Popups (combo box lists, menus) and transparent forms go through FMXWayland's frames: FastCanvas reads them back
+  and hands them over with `FmuxCanvasDrawBitmap` (FMXWayland makes a popup's `xdg_popup` again at every show and
+  move, which a presenting thread could not follow).
+- Before FMXWayland unmaps a window FastCanvas stops presenting to it (it wraps FMX's window service), and the first
+  frame of a window shown is presented before FMX's paint returns; FMXWayland applies the window's viewport, geometry
+  and decorations before the presenter's next commit (see the contract below).
+- Building: `tools\build.ps1 -Define FASTCANVAS -SearchPath
+  <FastCanvas>\src\Canvas,<FastCanvas>\third_party\pasvulkan\src` for Hello; FastCanvas's own probes with its `tools\build-linux.ps1 -Wayland <FMXWayland folder>`. Running needs
+  `libvulkan1` and a Vulkan driver with `VK_KHR_wayland_surface` (Mesa's; lavapipe on the CPU presents through
+  `wl_shm`), and Pango, HarfBuzz, fontconfig, FreeType for FastCanvas's text.
+- Tested (2026-10-14, WSL 2 with Ubuntu 26.04, Mesa 26.0.8's lavapipe, the only Vulkan device there): Hello with
+  FastCanvas passes `tests\weston-headless.ps1 -Canvas TFastCanvas` (157 checks, Weston 14 at scale 1 and 2: the
+  self-test with the combo box drop-down, the second form hidden and shown again, maximize and restore, the modal
+  form, the message box, FMX's file dialogs; the default font; the popups of unmapped windows; the own title bar) and
+  `tests\compositors.ps1 -Canvas TFastCanvas` on Weston 1 and 2, sway 1 and 1.5, KWin 1 and 1.5, GNOME Shell 1 and
+  1.5 with all parts (self-test, scenario with input and the clipboard, own title bar with input, popups of unmapped
+  windows, the portal's file dialogs): 1028 checks passed, 22 not applicable, none failed. The Vulkan validation layer
+  (with synchronization validation) reports nothing for the self-test on Weston and on sway at 1.5 (23 scale changes),
+  for FastCanvas's PortProbe (its scene, the Vulkan 3D context's cube with ray-traced shadows, ambient occlusion and
+  reflections, FMX effects; resized from code 42 times at scale 2) and for its Form3DProbe (a `TForm3D` window with
+  its own swap chain). What the runs found and fixed is in the commits: the viewport, the configure's state before
+  the presenter's commits (Weston's `invalid_surface_state` on maximize), the window mapped after its first paint,
+  toplevels hidden and shown again (Weston sent no configure to an unmapped toplevel that kept its role: any canvas),
+  the form's canvas made again on scale changes (a new window starts at the output's integer scale), the
+  initialization order of `FMUX.Api` (`FMXWayland.FmuxLoad`), and in FastCanvas a click into an empty `TEdit`.
+- Frame rate and CPU on the same scene (FastCanvas's PortProbe without its cube, 480x840, headless Weston at scale 1,
+  20 s; lavapipe renders on the CPU, so only the relations mean something): repainted at once, FastCanvas 123.5 FPS
+  at 2.44 CPU seconds per second (19.8 ms per frame, lavapipe's threads included; 0.3 ms of it recording on the main
+  thread), FMX's cairo canvas 39.5 FPS at 0.17 (4.3 ms per frame; FMXWayland's frame callbacks pace it), the Skia
+  raster canvas 24.4 FPS at 0.79 (32.5 ms, one thread); with a 16 ms timer 62.0 FPS at 1.28, 39.4 at 0.15, 23.9 at
+  0.79.
+
+| KWin 6.6 at 1.5: Hello on FastCanvas (the drop-down read back into FMXWayland's frame) | PortProbe on Weston: shapes, Pango text with emoji, the Vulkan 3D context's cube | Form3DProbe on Weston: a `TForm3D` with ray-traced shadows and ambient occlusion |
+|---|---|---|
+| ![KWin](docs/screenshots/fastcanvas-kwin-scale1.5-combo.png) | ![PortProbe](docs/screenshots/fastcanvas-portprobe-weston.png) | ![Form3DProbe](docs/screenshots/fastcanvas-form3d-weston.png) |
+
 ## IFMXWaylandNativeWindow (contract for GPU canvases)
 
 A GPU canvas (FastCanvas on Vulkan) creates its own `VkSurfaceKHR` for a window with
@@ -443,11 +525,29 @@ that). Never change this declaration; extensions get a new interface with a new 
 - `GetBufferSize`/`GetScale` change on resize and scale changes; FMX resizes its canvas then (form resize, and
   `TScaleChangedMessage` for scale changes).
 - `SetExternalPresentation(Handle, True)`: FMXWayland keeps calling FMX's paint (the canvas renders and presents in
-  `EndScene`), but stops attaching its own wl_shm frames. FMXWayland still sets the surface's buffer scale (or the
-  viewport destination with fractional scaling) and the decoration subsurface; that state is double-buffered and
-  takes effect with the presenter's next commit (`vkQueuePresentKHR`).
+  `EndScene` or later, from a thread of its own), but stops attaching its own wl_shm frames. The surface gets a
+  `wp_viewport` (where the compositor has `wp_viewporter`, all tested ones do) whose destination is the window's
+  logical size, with buffer scale 1: a buffer of any size the presenter commits is valid and fills the window (a
+  frame painted before a resize or a scale change; without the viewport an odd-sized buffer at buffer scale 2 would
+  be a protocol error). FMXWayland still owns the viewport, the window geometry and the decoration subsurface; that
+  state is double-buffered and takes effect with whichever commit of the presenter (`vkQueuePresentKHR`) comes next.
+  So that any such commit is valid for the configure acknowledged before it, FMXWayland sends that state right next
+  to the acknowledgement, before FMX hears of the configure (into maximized or fullscreen the new geometry first, out
+  of it the acknowledgement first: Weston raises `invalid_surface_state` when a maximized window's geometry is not
+  the configured size), and again before every paint. There are no frame callbacks of FMXWayland then: FMX paints
+  when it invalidates (its animations and timers), the presenter paces its own frames.
+- The window counts as mapped (its popups are made, `CanParentPopups`) once the first paint after it was shown has
+  returned: the presenter should have committed that frame by then (FastCanvas waits until its first frame of a
+  window is presented).
+- Before FMXWayland unmaps a window (FMX hides the form: `FmuxShowWindow(False)`, which attaches no buffer) the
+  presenter must have stopped presenting to it, and it must not present again before FMXWayland paints the window
+  after the compositor configured it again (a buffer committed to an unmapped xdg_surface is a protocol error).
+  FastCanvas wraps FMX's `IFMXWindowService` for this (`HideWindow`, `ReleaseWindow`). FMXWayland itself unmaps
+  popups when they move or resize (a new xdg_popup), which no presenter can follow: present popups through
+  FMXWayland's frames (FastCanvas reads their frames back into the paint context with `FmuxCanvasDrawBitmap`).
 - Everything is on the main thread; FMXWayland dispatches only the default event queue, with the
-  `wl_display_prepare_read` protocol, so Vulkan WSI's own queue can coexist.
+  `wl_display_prepare_read` protocol, so Vulkan WSI's own queue can coexist (Mesa's WSI reads and dispatches its
+  queue on the presenting thread).
 
 ## IFMXWaylandWindowFrame (for programs with their own title bar)
 
@@ -578,6 +678,12 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
   wired yet), printing and PDF (`FmuxCreatePDFContext`), OpenGL contexts. Pango spaces wrapped lines by the font's
   metrics, a little wider than Skia for some fonts (Ubuntu); FMX's own dialogs size themselves to it.
 - `TMainMenu` (a native menu bar under GTK): not shown. Popup menus (`TPopupMenu`) are FMX forms and work.
+- External presentation (FastCanvas): no frame callbacks drive FMX's paints of such a window (FMX paints when it
+  invalidates; with `MAILBOX` the presenter may draw more frames than the output shows); the acknowledgement of a
+  configure is sent next to the new size's state, not in the presenter's commit, so a commit of the presenter's
+  thread can still fall between the two (a window going from one maximized size to another: not seen in the tests);
+  popups and transparent forms of a GPU canvas go through FMXWayland's frames (FastCanvas reads them back); tested on
+  lavapipe only (WSL has no GPU driver with Wayland presentation).
 - Drag and drop (also between applications), clipboard images and custom formats, IME (text-input-v3), touch and
   gestures, tooltips, window icons, printing, web browser, media player.
 - File dialogs: a multiple selection through `TOpenDialog` keeps what fits into FMX's 1024 characters; the portal's
@@ -627,8 +733,11 @@ canvas on Weston 14 and sway 1.11. 104 of 186 FMUX functions are assigned (77 fu
 
 ## Next steps
 
-1. **FastCanvas (Vulkan)**: FastCanvas declares `IFMXWaylandNativeWindow` (contract above), creates its
-   `VkSurfaceKHR` on Wayland and calls `SetExternalPresentation`; test both canvases side by side.
+1. **External presentation**: pacing by the compositor (an `IFMXWaylandNativeWindow2` through which the presenter
+   tells FMXWayland that it committed a frame, so that frame callbacks drive FMX's paints as with wl_shm frames;
+   now FMX paints at the pace of its invalidations), and the acknowledgement of a configure in the presenter's own
+   commit (now FMXWayland sends it next to the new size's state: a commit of the presenter's thread can fall in
+   between).
 2. **IME** with text-input-unstable-v3 (the protocol unit exists): FmuxImeEnterControl/ExitControl/SetCaretPos to
    `enable`/`set_cursor_rectangle`, preedit to FMX's marked text.
 3. **Decorations**: polish the client-side ones (shadows, theme colors, `prefers-color-scheme` through the portal).

@@ -50,9 +50,20 @@ glibc 2.35 или новее);
 без `libsk4d.so`). Сравнение двух канвасов: `tests\canvas-check.ps1`. **Запуск в WSLg:**
 `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir WAYLAND_DISPLAY=wayland-0 ./Hello` (без `DISPLAY`).
 
-**Для FastCanvas (Vulkan):** платформенный сервис `IFMXWaylandNativeWindow`
-(`{B04A2FBC-1322-42BC-98A6-D526A7854F2C}`) отдаёт `wl_display`, `wl_surface` окна, размер буфера и масштаб;
-`SetExternalPresentation` отключает наши wl_shm-кадры, когда окно презентует Vulkan. Контракт описан в README.md.
+**FastCanvas (Vulkan):** [FastCanvas](https://github.com/Fasday/FMXFastCanvas) работает на FMXWayland нативно:
+окна верхнего уровня (формы, модальные формы, диалоги, `TForm3D`) презентуются в свои `wl_surface` через
+`VK_KHR_wayland_surface` из потока FastCanvas (режим `MAILBOX`, иначе `IMMEDIATE`, не `FIFO`), всплывающие окна и
+прозрачные формы FastCanvas рисует на GPU, считывает и отдаёт в кадр FMXWayland через `FmuxCanvasDrawBitmap`. Без
+GTK, X11, Skia и libfmux; проекты не зависят друг от друга при компиляции. Платформенный сервис
+`IFMXWaylandNativeWindow` (`{B04A2FBC-1322-42BC-98A6-D526A7854F2C}`) отдаёт `wl_display`, `wl_surface` окна, размер
+буфера и масштаб; `SetExternalPresentation` отключает наши wl_shm-кадры. Под внешней презентацией у окна есть
+`wp_viewport` (буфер любого размера валиден), состояние окна для нового размера (viewport, геометрия, декорации)
+отправляется рядом с подтверждением configure и перед каждой отрисовкой, окно считается отображённым после первой
+отрисовки; перед скрытием окна FastCanvas прекращает презентацию. Сборка Hello с FastCanvas:
+`.\tools\build.ps1 -Project samples\Hello\Hello.dpr -Define FASTCANVAS -SearchPath
+<FastCanvas>\src\Canvas,<FastCanvas>\third_party\pasvulkan\src`.
+Проверки: `tests\weston-headless.ps1 -Canvas TFastCanvas`, `tests\compositors.ps1 -Canvas TFastCanvas`. Подробности,
+контракт и результаты — в README.md (разделы «FastCanvas (Vulkan)» и «IFMXWaylandNativeWindow»).
 
 **Свой заголовок окна (FMR Ribbon и др.):** сервис `IFMXWaylandWindowFrame` (`{547B5786-5639-43A4-A598-1A03B465783A}`,
 объявление из FMR Ribbon, модуль `FMXWayland.Frame`): `SetDecorated(False)` убирает все декорации окна (и наши, и
