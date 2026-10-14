@@ -7,8 +7,9 @@
   library through the function-pointer variables of the unit FMUX.Api. The precompiled FMX units accept a different
   FMUX.Api with the same interface section, so FMXWayland generates one:
 
-  - interface: copied verbatim from $(BDS)\source\fmx\FMUX.Api.pas of the installed Delphi (it is Embarcadero's code:
-    the generated file is never committed, see .gitignore);
+  - interface: copied verbatim from the FMUX.Api.pas of the installed Delphi (it is Embarcadero's code: the generated
+    file is never committed, see .gitignore): $(BDS)\source\fmx in Delphi 13.0, the GetIt package of FMX for Linux in
+    later releases; tools\delphi-env.ps1 takes the one next to the FMUX.Api.dcu the build uses (or -Source);
   - implementation: ours. Every function-pointer variable first gets a generated stub with the declared signature that
     logs its name once and returns zero/nil/False (Default(T)); then FMXWayland.Fmux.AssignFmuxApi replaces the
     implemented ones. The helper routines declared in the interface (FmuxStateToShiftState, MsgDlgButtonsToButtons, ...)
@@ -22,16 +23,27 @@
   .\tools\gen-fmux-api.ps1 -Out D:\Work\FMXWayland-build\gen\FMUX.Api.pas -StatusFile D:\Work\FMXWayland-build\status.md
 #>
 param(
-  [string] $Bds = 'C:\Program Files (x86)\Embarcadero\Studio\37.0',
+  # Delphi's folder; '' = from the registry (RootDir of 37.0).
+  [string] $Bds = '',
   [string] $Out = 'D:\Work\FMXWayland-build\gen\FMUX.Api.pas',
-  [string] $StatusFile = ''
+  [string] $StatusFile = '',
+  # FMUX.Api.pas to take the interface from; '' = found by tools\delphi-env.ps1 (Find-FmxLinux).
+  [string] $Source = '',
+  [ValidateSet('Release', 'Debug')] [string] $Config = 'Release'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $Root = Split-Path $PSScriptRoot -Parent
-$Source = Join-Path $Bds 'source\fmx\FMUX.Api.pas'
-if (-not (Test-Path $Source)) { throw "No $Source (is Delphi with the FMX Linux sources installed?)" }
+. (Join-Path $PSScriptRoot 'delphi-env.ps1')
+$DelphiEnv = Get-DelphiEnv $Bds
+$Bds = $DelphiEnv.Bds
+if (-not $Source) {
+  $fmx = Find-FmxLinux $DelphiEnv $Config
+  $Source = $fmx.Source
+  Write-Host "FMX for Linux: units in $($fmx.DcuDir), FMUX.Api from $Source"
+}
+if (-not (Test-Path $Source)) { throw "No $Source" }
 
 $lines = [IO.File]::ReadAllLines($Source)
 $implIndex = -1

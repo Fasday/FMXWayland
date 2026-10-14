@@ -56,8 +56,12 @@ includes them, like a frame on other platforms. `FMXWAYLAND_CSD=0` turns them of
 
 ## Requirements
 
-- Delphi 13 (RAD Studio 37.0) with the Linux platform (Enterprise/Architect), FMX Linux sources installed
-  (`source\fmx\FMUX.Api.pas`).
+- Delphi 13 (RAD Studio 37.0) with the Linux platform (Enterprise/Architect) and FMX for Linux with its sources:
+  in Delphi 13.0 part of the product (`source\fmx\FMUX.Api.pas`, units in `lib\linux64`), in later releases (13.1) a
+  GetIt package in the catalog repository. `tools\delphi-env.ps1` finds the `FMUX.Api.dcu` the build uses (the
+  Linux64 library path of the IDE, then the catalog repository, then `lib\linux64`) and the `FMUX.Api.pas` next to it:
+  the generated interface must be the one those precompiled FMX units were compiled with. `gen-fmux-api.ps1 -Source`
+  overrides it.
 - A Linux platform SDK to link against: `tools\make-linux-sdk.ps1` makes one from a WSL distribution (or use the
   IDE's SDK manager).
 - At run time: a Wayland compositor with `wl_compositor`, `wl_shm` and `xdg_wm_base`; the libraries

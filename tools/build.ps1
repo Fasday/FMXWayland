@@ -25,10 +25,17 @@ param(
   [string[]] $Define = @(),
   [string] $BuildRoot = 'D:\Work\FMXWayland-build',
   [string] $Sdk = 'D:\LinuxSDK\ubuntu-26.04',
-  [string] $Bds = 'C:\Program Files (x86)\Embarcadero\Studio\37.0'
+  # Delphi's folder; '' = from the registry (RootDir of 37.0).
+  [string] $Bds = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'delphi-env.ps1')
+$DelphiEnv = Get-DelphiEnv $Bds
+$Bds = $DelphiEnv.Bds
+# FMX for Linux: in the product (Delphi 13.0) or a GetIt package (later releases); see tools\delphi-env.ps1.
+$Fmx = Find-FmxLinux $DelphiEnv $Config
 
 $Root = Split-Path $PSScriptRoot -Parent
 $Dcc = Join-Path $Bds 'bin\dcclinux64.exe'
@@ -48,16 +55,18 @@ $OutDir = Join-Path $BuildRoot "bin\Linux64\$Config"
 $DcuDir = Join-Path $BuildRoot "dcu\Linux64\$Config\$Name"
 New-Item -ItemType Directory -Force -Path $GenDir, $OutDir, $DcuDir | Out-Null
 
-& (Join-Path $PSScriptRoot 'gen-fmux-api.ps1') -Bds $Bds -Out (Join-Path $GenDir 'FMUX.Api.pas')
+& (Join-Path $PSScriptRoot 'gen-fmux-api.ps1') -Bds $Bds -Out (Join-Path $GenDir 'FMUX.Api.pas') -Source $Fmx.Source -Config $Config
 
 $env:BDS = $Bds
 $env:BDSINCLUDE = Join-Path $Bds 'include'
-$env:BDSCOMMONDIR = 'C:\Users\Public\Documents\Embarcadero\Studio\37.0'
+$env:BDSCOMMONDIR = $DelphiEnv.CommonDir
 $env:PATH = "$Bds\bin;$Bds\bin64;$env:PATH"
 
 $paths = @($GenDir, (Join-Path $Root 'src'), (Join-Path $Root 'src\Protocols'), (Split-Path $ProjectPath -Parent))
 $paths += $SearchPath | ForEach-Object { (Resolve-Path $_).Path }
 $delphiLib = Join-Path $Bds "lib\linux64\$($Config.ToLower())"
+# The precompiled FMX for Linux units first when they come from a GetIt package.
+if ($Fmx.DcuDir -ne $delphiLib) { $paths += $Fmx.DcuDir }
 $paths += $delphiLib
 # Delphi 13 ships no FMX.Filter.res for Linux64 (FMX.Filter links it); resources are platform-independent, so the
 # Win64 one goes into a folder on the resource path.
@@ -68,7 +77,7 @@ if (-not (Test-Path (Join-Path $delphiLib 'FMX.Filter.res'))) {
   $paths += $resFix
 }
 $pathArg = ($paths -join ';')
-$libPaths = @($delphiLib, (Join-Path $Sdk 'usr\lib\x86_64-linux-gnu'), $gccDir.FullName)
+$libPaths = @($Fmx.DcuDir, $delphiLib, (Join-Path $Sdk 'usr\lib\x86_64-linux-gnu'), $gccDir.FullName)
 $defines = @($Define)
 $flags = @(
   '-B', '-Q',
