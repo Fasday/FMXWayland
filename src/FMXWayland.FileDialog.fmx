@@ -1,0 +1,128 @@
+object FMXWaylandFileDialog: TFMXWaylandFileDialog
+  Caption = 'Выбор файла'
+  ClientHeight = 520
+  ClientWidth = 760
+  Position = ScreenCenter
+  OnKeyDown = DialogKeyDown
+  object Content: TLayout
+    Align = Client
+    Padding.Left = 12.000000000000000000
+    Padding.Top = 12.000000000000000000
+    Padding.Right = 12.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    object NavigationRow: TLayout
+      Align = Top
+      Size.Height = 36.000000000000000000
+      object UpButton: TButton
+        Align = Left
+        Size.Width = 150.000000000000000000
+        Margins.Right = 8.000000000000000000
+        Text = 'На уровень выше'
+        OnClick = UpClick
+      end
+      object HomeButton: TButton
+        Align = Left
+        Size.Width = 90.000000000000000000
+        Margins.Right = 8.000000000000000000
+        Text = 'Домой'
+        OnClick = HomeClick
+      end
+      object NewFolderButton: TButton
+        Align = Left
+        Size.Width = 140.000000000000000000
+        Margins.Right = 12.000000000000000000
+        Text = 'Создать папку'
+        OnClick = NewFolderClick
+      end
+      object HiddenCheck: TCheckBox
+        Align = Client
+        Text = 'Скрытые файлы'
+        OnChange = ReloadClick
+      end
+    end
+    object LocationRow: TLayout
+      Align = Top
+      Position.Y = 36.000000000000000000
+      Size.Height = 40.000000000000000000
+      Padding.Top = 6.000000000000000000
+      Padding.Bottom = 6.000000000000000000
+      object LocationLabel: TLabel
+        Align = Left
+        Size.Width = 90.000000000000000000
+        Text = 'Папка'
+      end
+      object GoButton: TButton
+        Align = Right
+        Size.Width = 90.000000000000000000
+        Margins.Left = 8.000000000000000000
+        Text = 'Перейти'
+        OnClick = GoClick
+      end
+      object LocationEdit: TEdit
+        Align = Client
+        OnKeyDown = LocationKeyDown
+      end
+    end
+    object Footer: TLayout
+      Align = Bottom
+      Position.Y = 356.000000000000000000
+      Size.Height = 140.000000000000000000
+      Padding.Top = 8.000000000000000000
+      object NameRow: TLayout
+        Align = Top
+        Size.Height = 34.000000000000000000
+        Padding.Bottom = 6.000000000000000000
+        object NameLabel: TLabel
+          Align = Left
+          Size.Width = 90.000000000000000000
+          Text = 'Имя файла'
+        end
+        object NameEdit: TEdit
+          Align = Client
+          OnChange = NameChange
+        end
+      end
+      object FilterRow: TLayout
+        Align = Top
+        Position.Y = 34.000000000000000000
+        Size.Height = 34.000000000000000000
+        Padding.Bottom = 6.000000000000000000
+        object FilterLabel: TLabel
+          Align = Left
+          Size.Width = 90.000000000000000000
+          Text = 'Тип файлов'
+        end
+        object FilterCombo: TComboBox
+          Align = Client
+          OnChange = ReloadClick
+        end
+      end
+      object ButtonRow: TLayout
+        Align = Bottom
+        Size.Height = 32.000000000000000000
+        object CancelButton: TButton
+          Align = Right
+          Size.Width = 110.000000000000000000
+          Text = 'Отмена'
+          ModalResult = 2
+        end
+        object AcceptButton: TButton
+          Align = Right
+          Size.Width = 160.000000000000000000
+          Margins.Right = 8.000000000000000000
+          Text = 'Открыть'
+          OnClick = AcceptClick
+        end
+      end
+      object StatusLabel: TLabel
+        Align = Client
+        TextSettings.WordWrap = True
+      end
+    end
+    object FileList: TListBox
+      Align = Client
+      OnChange = ListChange
+      OnDblClick = ListDblClick
+    end
+  end
+end
