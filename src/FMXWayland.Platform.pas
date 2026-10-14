@@ -1872,7 +1872,11 @@ begin
       else
         xdg_toplevel_set_maximized(FToplevel);
     TWlDecoPart.Minimize:
-      xdg_toplevel_set_minimized(FToplevel);
+      begin
+        xdg_toplevel_set_minimized(FToplevel);
+        FState := TWlWindowState.Minimized;
+        DoStateChanged(FState);
+      end;
   end;
 end;
 
@@ -2082,9 +2086,15 @@ begin
       SizeChanged then
       FDecoDirty := True;
     FFullScreen := FPendingFullScreen;
-    StateChanged := (NewState <> FState) and (FState <> TWlWindowState.Minimized);
     if FState = TWlWindowState.Minimized then
-      StateChanged := NewState = TWlWindowState.Maximized;
+    begin
+      // Wayland does not tell when a minimized window comes back: being activated again means it has.
+      StateChanged := FPendingActivated;
+      if not StateChanged then
+        NewState := TWlWindowState.Minimized;
+    end
+    else
+      StateChanged := NewState <> FState;
     FState := NewState;
     // The state first: FMX's OnResize of a maximized form sees wsMaximized.
     if StateChanged then
@@ -2314,7 +2324,10 @@ begin
       if FState <> TWlWindowState.Maximized then
         xdg_toplevel_set_maximized(FToplevel);
     TWlWindowState.Minimized:
-      xdg_toplevel_set_minimized(FToplevel);
+      begin
+        xdg_toplevel_set_minimized(FToplevel);
+        FState := TWlWindowState.Minimized;
+      end;
   end;
   FDisplay.Flush;
 end;

@@ -57,7 +57,8 @@ const
     (Code: $1008FF29; Vk: vkBrowserRefresh), (Code: $1008FF28; Vk: vkBrowserStop),
     (Code: $1008FF1B; Vk: vkBrowserSearch), (Code: $1008FF30; Vk: vkBrowserFavorites),
     (Code: $1008FF18; Vk: vkBrowserHome), (Code: $1008FF19; Vk: vkLaunchMail), (Code: $1008FF2F; Vk: vkSleep),
-    (Code: $1008FF1D; Vk: vkLaunchApp2), (Code: $1008FF5D; Vk: vkLaunchApp1), (Code: $1008FF32; Vk: vkLaunchMediaSelect),
+    (Code: $1008FF1D; Vk: vkLaunchApp2), (Code: $1008FF5D; Vk: vkLaunchApp1),
+    (Code: $1008FF32; Vk: vkLaunchMediaSelect),
     (Code: $FF6C; Vk: vkCancel));
 
   // evdev codes (linux/input-event-codes.h) of the character keys -> virtual key at that place on a US keyboard.
