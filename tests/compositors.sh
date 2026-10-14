@@ -287,7 +287,8 @@ wait_window() { # title seconds
   while [ $i -lt $(( ${2:-5} * 5 )) ]; do
     if t geometry "$1"; then
       set -- "$1" "${2:-5}" $ANS
-      [ "${5:-0}" -gt 0 ] && [ "${6:-0}" -gt 0 ] && return 0
+      # (KWin gives fractional coordinates at fractional scales.)
+      [ "${5%%.*}" -gt 0 ] 2>/dev/null && [ "${6%%.*}" -gt 0 ] 2>/dev/null && return 0
     fi
     sleep 0.2; i=$((i + 1))
   done
@@ -451,8 +452,9 @@ dialog_origin() { # title: CX, CY and the client size DW x DH of a dialog window
 }
 click_at 75 481
 check "file dialog without a portal: FMX's own" wait_log 'portal: no file dialog \(.*ServiceUnknown' 1 4
-if wait_window "Hello: open a file" 5 && dialog_origin "Hello: open a file"; then
-  sleep 0.5
+# (The geometry a moment after the window appears: sway may still be adding its title bar or switching it to the
+# program's decorations.)
+if wait_window "Hello: open a file" 5 && sleep 0.8 && dialog_origin "Hello: open a file"; then
   shot 05a-fmx-open-dialog
   at 100 160; sleep 0.2; t click; sleep 0.08; t click
   if ! check "FMX file dialog: a double click opens a file" \
@@ -464,8 +466,7 @@ else
 fi
 CX=$MX; CY=$MY
 click_at 195 481
-if wait_window "Hello: save a file" 5 && dialog_origin "Hello: save a file"; then
-  sleep 0.5
+if wait_window "Hello: save a file" 5 && sleep 0.8 && dialog_origin "Hello: save a file"; then
   click_at 400 $((DH - 130))
   t key ctrl+a; t type "saved.txt"
   sleep 0.3
@@ -480,8 +481,7 @@ else
 fi
 CX=$MX; CY=$MY
 click_at 320 481
-if wait_window "Hello: select a folder" 5 && dialog_origin "Hello: select a folder"; then
-  sleep 0.5
+if wait_window "Hello: select a folder" 5 && sleep 0.8 && dialog_origin "Hello: select a folder"; then
   t key escape
   if ! check "FMX file dialog: Escape cancels" wait_log 'folder dialog result False' 1 3; then
     click_at $((DW - 235)) $((DH - 28))
@@ -590,13 +590,15 @@ else
   PLOG="$OUT/portal.log"
   # Each line with the time it was written (the portal's own log is in run.log).
   (cd "$PDIR" && FMXWAYLAND_LOG=2 timeout 240 "$PROG" --verbose --dialog-dir="$DLG" --quit-after=220 \
-    --quit-in-folder-dialog=4 2>&1 |
+    --quit-in-folder-dialog=10 2>&1 |
     python3 -u -c 'import sys, time
 for l in sys.stdin.buffer:
     sys.stdout.buffer.write(time.strftime("%H:%M:%S ").encode() + l); sys.stdout.buffer.flush()' > "$PLOG"
     echo "exit=${PIPESTATUS[0]}" >> "$PLOG") &
   APP=$!
   check "portal: window shown" wait_log 'FMXWayland: debug: configure "FMXWayland Hello": [1-9]' 1 30
+  # sway with "border csd" switches the window to the program's decorations after it appears.
+  [ "$COMP" = sway-csd ] && wait_log 'decoration mode 1 of "FMXWayland Hello"' 1 5
   sleep 1
   t settle
   origin "$MAIN"
@@ -703,7 +705,7 @@ for l in sys.stdin.buffer:
       --method org.freedesktop.portal.Request.Close > "$RT/close.txt" 2>&1
     cat "$RT/close.txt" >> "$OUT/steps.log"
     check "portal: another client cannot close the program's request" grep -q AccessDenied "$RT/close.txt"
-    check "portal: the program ends during the dialog" wait_log 'closing during the folder dialog' 1 12
+    check "portal: the program ends during the dialog" wait_log 'closing during the folder dialog' 1 15
     check "portal: it closes its request (cancelled)" wait_log 'portal: file dialog cancelled' 1 5
     check "portal: the dialog window goes away with it" wait_window_gone "Hello: select a folder" 8
   else
