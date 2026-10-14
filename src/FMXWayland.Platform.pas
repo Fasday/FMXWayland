@@ -185,7 +185,20 @@ type
     FGeometryW: Integer;
     FGeometryH: Integer;
     FActivationToken: Pxdg_activation_token_v1;
+    // Where a popup asked to be (relative to the parent's window geometry), for diagnostics.
+    FPopupAskX: Integer;
+    FPopupAskY: Integer;
+    // What the window manager does with toplevels (xdg_toplevel.wm_capabilities, xdg_wm_base 5): all of it until it
+    // says otherwise.
+    FCanMaximize: Boolean;
+    FCanMinimize: Boolean;
+    FCanWindowMenu: Boolean;
+    // The compositor switched the decorations (xdg-decoration) since the last configure: FMX's window rectangle
+    // (with the decorations) changes even when the size stays.
+    FDecoSwitched: Boolean;
     procedure CreateToplevelRole;
+    function DecoButtonAt(const AIndex: Integer): TWlDecoPart;
+    function DecoButtonCount: Integer;
     procedure EnableCsd;
     procedure DisableCsd;
     function DecoPartAt(const AX, AY: Single): TWlDecoPart;
@@ -716,7 +729,47 @@ begin
 end;
 
 procedure ToplevelWmCapabilities(AData: Pointer; AXdgToplevel: Pxdg_toplevel; ACapabilities: Pwl_array); cdecl;
+var
+  W: TWlWindow;
+  P: PCardinal;
+  I: Integer;
+  S: string;
 begin
+  W := TWlWindow(AData);
+  W.FCanMaximize := False;
+  W.FCanMinimize := False;
+  W.FCanWindowMenu := False;
+  S := '';
+  if (ACapabilities <> nil) and (ACapabilities.data <> nil) then
+  begin
+    P := ACapabilities.data;
+    for I := 0 to Integer(ACapabilities.size div SizeOf(Cardinal)) - 1 do
+    begin
+      case P^ of
+        XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU:
+          begin
+            W.FCanWindowMenu := True;
+            S := S + ' window_menu';
+          end;
+        XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE:
+          begin
+            W.FCanMaximize := True;
+            S := S + ' maximize';
+          end;
+        XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN:
+          S := S + ' fullscreen';
+        XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE:
+          begin
+            W.FCanMinimize := True;
+            S := S + ' minimize';
+          end;
+      end;
+      Inc(P);
+    end;
+  end;
+  WlLog(TWlLogLevel.Debug, 'wm capabilities of "%s":%s', [W.FTitle, S]);
+  // The title bar buttons follow (it takes effect with the configure that comes next).
+  W.FDecoDirty := True;
 end;
 
 const
@@ -729,6 +782,8 @@ var
   NewOrigin: TPointF;
 begin
   W := TWlWindow(AData);
+  WlLog(TWlLogLevel.Debug, 'popup configure %d,%d %dx%d (asked %d,%d %dx%d)', [AX, AY, AWidth, AHeight, W.FPopupAskX,
+    W.FPopupAskY, W.FWidth, W.FHeight]);
   if W.FParent <> nil then
   begin
     // AX, AY: relative to the parent's window geometry (its decorations included).
@@ -765,14 +820,18 @@ procedure DecorationConfigure(AData: Pointer; AZxdgToplevelDecorationV1: Pzxdg_t
   AMode: UInt32); cdecl;
 var
   W: TWlWindow;
+  WasCsd: Boolean;
 begin
-  WlLog(TWlLogLevel.Debug, 'decoration mode %d', [AMode]);
+  WlLog(TWlLogLevel.Debug, 'decoration mode %d of "%s"', [AMode, TWlWindow(AData).FTitle]);
   W := TWlWindow(AData);
+  WasCsd := W.FCsd;
   // The compositor wants the client to decorate (it may say so even though it offers the protocol).
   if (AMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) and not W.FBorderless then
     W.EnableCsd
   else if AMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE then
     W.DisableCsd;
+  if W.FCsd <> WasCsd then
+    W.FDecoSwitched := True;
 end;
 
 procedure DecoSurfaceEnter(AData: Pointer; AWlSurface: Pwl_surface; AOutput: Pwl_output); cdecl;
@@ -817,6 +876,7 @@ begin
   W := TWlWindow(AData);
   if W.FActivationToken = AXdgActivationTokenV1 then
   begin
+    WlLog(TWlLogLevel.Debug, 'activate "%s" with token %s', [W.FTitle, Utf8ToStr(AToken)]);
     xdg_activation_v1_activate(W.FDisplay.FActivation, AToken, W.FSurface);
     W.FActivationToken := nil;
   end;
@@ -924,6 +984,9 @@ begin
   end;
   W := D.FPointerWindow;
   D.FLastInputSerial := ASerial;
+  if WlLogEnabled(TWlLogLevel.Trace) then
+    WlLog(TWlLogLevel.Trace, 'button %x state %d time %u at %.1f,%.1f (last press %u)', [AButton, AState, ATime,
+      D.FPointerPos.X, D.FPointerPos.Y, D.FLastClickTime]);
   if (W <> nil) and D.FPointerOnDeco then
   begin
     if AState = WL_POINTER_BUTTON_STATE_PRESSED then
@@ -1312,6 +1375,9 @@ begin
   FIntScale := 1;
   FLastBufferScale := 1;
   FDirty := TRectF.Empty;
+  FCanMaximize := True;
+  FCanMinimize := True;
+  FCanWindowMenu := True;
   FSurface := wl_compositor_create_surface(ADisplay.FCompositor);
   // The listener's data is the proxy's user data: WindowFromSurface finds the window through it.
   wl_surface_add_listener(FSurface, @CSurfaceListener, Self);
@@ -1674,16 +1740,10 @@ begin
   else
     BtnTop := CDecoBorder;
   Thick := Max(1, Round(1.2 * S));
-  for Part in [TWlDecoPart.Close, TWlDecoPart.Maximize, TWlDecoPart.Minimize] do
+  for I := 0 to DecoButtonCount - 1 do
   begin
-    case Part of
-      TWlDecoPart.Close:
-        BtnX := Right - CDecoButtonWidth;
-      TWlDecoPart.Maximize:
-        BtnX := Right - 2 * CDecoButtonWidth;
-    else
-      BtnX := Right - 3 * CDecoButtonWidth;
-    end;
+    Part := DecoButtonAt(I);
+    BtnX := Right - (I + 1) * CDecoButtonWidth;
     if FActivated then
       Fg := CDecoIcon
     else
@@ -1738,8 +1798,8 @@ begin
         FillFrame(Frame, CX - R, CY + R - Thick, 2 * R, Thick, Fg);
     end;
   end;
-  DoDrawTitle(@Frame, Rect((Ins.Left + 10) * S, BtnTop * S, (Right - 3 * CDecoButtonWidth - 8) * S, (Ins.Top - 1) * S),
-    FTitle, FActivated);
+  DoDrawTitle(@Frame, Rect((Ins.Left + 10) * S, BtnTop * S, (Right - DecoButtonCount * CDecoButtonWidth - 8) * S,
+    (Ins.Top - 1) * S), FTitle, FActivated);
   wl_surface_attach(FDecoSurface, Buf.Buffer, 0, 0);
   if FDisplay.FCompositorVersion >= 3 then
     wl_surface_set_buffer_scale(FDecoSurface, S);
@@ -1799,15 +1859,36 @@ begin
   if AY < Ins.Top then
   begin
     Right := TW - Ins.Right;
-    if AX >= Right - CDecoButtonWidth then
-      Result := TWlDecoPart.Close
-    else if AX >= Right - 2 * CDecoButtonWidth then
-      Result := TWlDecoPart.Maximize
-    else if AX >= Right - 3 * CDecoButtonWidth then
-      Result := TWlDecoPart.Minimize
+    if AX >= Right - DecoButtonCount * CDecoButtonWidth then
+      Result := DecoButtonAt(Max(0, Ceil((Right - AX) / CDecoButtonWidth) - 1))
     else
       Result := TWlDecoPart.Title;
   end;
+end;
+
+function TWlWindow.DecoButtonCount: Integer;
+begin
+  Result := 1 + Ord(FCanMaximize) + Ord(FCanMinimize);
+end;
+
+function TWlWindow.DecoButtonAt(const AIndex: Integer): TWlDecoPart;
+const
+  COrder: array[0..2] of TWlDecoPart = (TWlDecoPart.Close, TWlDecoPart.Maximize, TWlDecoPart.Minimize);
+var
+  N: Integer;
+  P: TWlDecoPart;
+begin
+  // From the right: close, maximize, minimize, of those the window manager offers.
+  N := 0;
+  for P in COrder do
+    if (P = TWlDecoPart.Close) or ((P = TWlDecoPart.Maximize) and FCanMaximize) or
+      ((P = TWlDecoPart.Minimize) and FCanMinimize) then
+    begin
+      if N = AIndex then
+        Exit(P);
+      Inc(N);
+    end;
+  Result := TWlDecoPart.Title;
 end;
 
 procedure TWlWindow.DecoPointer(const AEvent: TWlPointerEvent; const AX, AY: Single; const AState: Integer;
@@ -1855,7 +1936,7 @@ begin
         if Part = TWlDecoPart.Title then
         begin
           Now := MonotonicMs;
-          if Now - FDecoLastClick <= CDoubleClickMs then
+          if (Now - FDecoLastClick <= CDoubleClickMs) and FCanMaximize then
           begin
             FDecoLastClick := 0;
             DecoAction(TWlDecoPart.Maximize);
@@ -1874,7 +1955,7 @@ begin
         else if CEdges[Part] <> 0 then
           xdg_toplevel_resize(FToplevel, FDisplay.FSeat, ASerial, CEdges[Part]);
       end
-      else if (AState = WL_STATE_RIGHT) and (Part = TWlDecoPart.Title) then
+      else if (AState = WL_STATE_RIGHT) and (Part = TWlDecoPart.Title) and FCanWindowMenu then
         xdg_toplevel_show_window_menu(FToplevel, FDisplay.FSeat, ASerial, Round(AX), Round(AY));
     TWlPointerEvent.Up:
       if (AState = WL_STATE_LEFT) and (FDecoPressed <> TWlDecoPart.None) then
@@ -1927,6 +2008,8 @@ begin
   PIns := FParent.DecorationInsets;
   RelX := Round(FOrigin.X - FParent.FOrigin.X) + PIns.Left;
   RelY := Round(FOrigin.Y - FParent.FOrigin.Y) + PIns.Top;
+  FPopupAskX := RelX;
+  FPopupAskY := RelY;
   // The anchor point stays inside the parent; the rest of the distance is an offset.
   AX := EnsureRange(RelX, 0, Max(0, FParent.FWidth + PIns.Left + PIns.Right - 1));
   AY := EnsureRange(RelY, 0, Max(0, FParent.FHeight + PIns.Top + PIns.Bottom - 1));
@@ -1981,8 +2064,11 @@ end;
 
 procedure TWlWindow.Activate;
 begin
-  if (FDisplay.FActivation = nil) or (FToplevel = nil) or not FVisible or (FActivationToken <> nil) then
+  // Not when the compositor says the window is active already: FMX asks again for the window it is told about.
+  if (FDisplay.FActivation = nil) or (FToplevel = nil) or not FVisible or (FActivationToken <> nil) or
+    FActivated then
     Exit;
+  WlLog(TWlLogLevel.Debug, 'activation token for "%s" (serial %d)', [FTitle, FDisplay.FLastInputSerial]);
   FActivationToken := xdg_activation_v1_get_activation_token(FDisplay.FActivation);
   xdg_activation_token_v1_add_listener(FActivationToken, @CActivationTokenListener, Self);
   if (FDisplay.FSeat <> nil) and (FDisplay.FLastInputSerial <> 0) then
@@ -2077,7 +2163,7 @@ end;
 
 procedure TWlWindow.HandleXdgConfigure(const ASerial: UInt32);
 var
-  WasConfigured, SizeChanged, StateChanged: Boolean;
+  WasConfigured, SizeChanged, StateChanged, DecoSwitched: Boolean;
   W, H: Integer;
   NewState: TWlWindowState;
   Ins: TRect;
@@ -2100,7 +2186,8 @@ begin
     H := FPendingHeight;
     if (W > 0) and (H > 0) then
     begin
-      // The size is the window geometry's: without the decorations of the new state.
+      // The size is the window geometry's: without the decorations of the new state. (When the compositor switches
+      // the decoration mode, as sway's "border csd" does, the window keeps its outer size: the client area changes.)
       Ins := InsetsFor(NewState, FPendingFullScreen);
       W := Max(1, W - Ins.Left - Ins.Right);
       H := Max(1, H - Ins.Top - Ins.Bottom);
@@ -2125,8 +2212,10 @@ begin
       FFullDamage := True;
     end;
     if (FFullScreen <> FPendingFullScreen) or (NewState <> FState) or (FPendingActivated <> FActivated) or
-      SizeChanged then
+      SizeChanged or FDecoSwitched then
       FDecoDirty := True;
+    DecoSwitched := FDecoSwitched;
+    FDecoSwitched := False;
     FFullScreen := FPendingFullScreen;
     if FState = TWlWindowState.Minimized then
     begin
@@ -2141,7 +2230,7 @@ begin
     // The state first: FMX's OnResize of a maximized form sees wsMaximized.
     if StateChanged then
       DoStateChanged(FState);
-    if SizeChanged or (FCsd and StateChanged) then
+    if SizeChanged or (FCsd and StateChanged) or DecoSwitched then
       DoResized;
     if FPendingActivated <> FActivated then
     begin

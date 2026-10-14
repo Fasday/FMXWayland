@@ -67,6 +67,8 @@ type
     procedure QuitTimerTimer(Sender: TObject);
     procedure NativeTimerTimer(Sender: TObject);
     procedure FormResize(Sender: TObject);
+    procedure FormActivate(Sender: TObject);
+    procedure FormDeactivate(Sender: TObject);
   end;
 
 var
@@ -258,7 +260,19 @@ begin
     FQuitTimer.Enabled := True;
   end;
   OnResize := FormResize;
+  OnActivate := FormActivate;
+  OnDeactivate := FormDeactivate;
   Log('created');
+end;
+
+procedure THelloForm.FormActivate(Sender: TObject);
+begin
+  Log('form activated');
+end;
+
+procedure THelloForm.FormDeactivate(Sender: TObject);
+begin
+  Log('form deactivated');
 end;
 
 procedure THelloForm.FormDestroy(Sender: TObject);
@@ -363,6 +377,7 @@ type
   private
     FOwnerForm: THelloForm;
     procedure CloseButtonClick(Sender: TObject);
+    procedure ActivateMainClick(Sender: TObject);
     procedure SecondFormClose(Sender: TObject; var Action: TCloseAction);
   public
     constructor CreateSecond(const AOwnerForm: THelloForm; const ANumber: Integer);
@@ -390,12 +405,24 @@ begin
   B.SetBounds(20, 80, 120, 30);
   B.Text := 'Close';
   B.OnClick := CloseButtonClick;
+  B := TButton.Create(Self);
+  B.Parent := Self;
+  B.SetBounds(160, 80, 180, 30);
+  B.Text := 'Activate main form';
+  B.OnClick := ActivateMainClick;
   OnClose := SecondFormClose;
 end;
 
 procedure TSecondForm.CloseButtonClick(Sender: TObject);
 begin
   Close;
+end;
+
+procedure TSecondForm.ActivateMainClick(Sender: TObject);
+begin
+  // The platform asks the compositor (xdg-activation on Wayland), which decides.
+  FOwnerForm.Log('activate main form');
+  FOwnerForm.Activate;
 end;
 
 procedure TSecondForm.SecondFormClose(Sender: TObject; var Action: TCloseAction);

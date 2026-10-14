@@ -359,6 +359,13 @@ end;
 
 procedure TFmuxWindow.DoActivate(const AActive: Boolean);
 begin
+  // A window below a modal one that the compositor activates (the user clicked it) stays inactive for FMX; the modal
+  // window asks to be activated instead, as on other platforms.
+  if AActive and not InputAllowed(Self) then
+  begin
+    GModalStack.Last.Activate;
+    Exit;
+  end;
   if Assigned(FCreate.Activate) then
     FCreate.Activate(FCreate.Data, AActive);
 end;
