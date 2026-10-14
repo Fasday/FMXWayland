@@ -129,7 +129,9 @@ Environment variables: `FMXWAYLAND_LOG` = 0 errors only, 1 warnings and "not imp
 - `tests\weston-headless.ps1` — non-interactive: the sample on a private headless Weston 14 at output scale 1 and
   2 (buffer size through `IFMXWaylandNativeWindow`, the program's frame dump, a compositor screenshot, clean exit).
 
-Evidence of the last runs: all checks of both passed (WSLg on Windows 11 with Ubuntu 26.04, Weston 14.0.2 headless).
+Evidence of the last runs: all checks of both passed (WSLg on Windows 11 with Ubuntu 26.04, Weston 14.0.2 headless);
+`Hello --selftest` also runs to the end on WSLg (its seat appears only after the RDP client connects, a second or so
+after the program starts: the clipboard falls back to a process-local one until then).
 
 | | |
 |---|---|
