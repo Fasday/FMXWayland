@@ -35,7 +35,7 @@ function PortalFileChooserVersion: Cardinal;
 implementation
 
 uses
-  System.Math, System.IOUtils, FMXWayland.Log;
+  System.Math, System.IOUtils, FMXWayland.Log, FMXWayland.Posix;
 
 const
   PortalDestination = 'org.freedesktop.portal.Desktop';
@@ -306,16 +306,20 @@ var
   I: Integer;
   Version, Code: Cardinal;
   Pending: Boolean;
+  Started: Int64;
 begin
   Files := nil;
   Result := False;
   Bus := nil;
   Handle := '';
   Pending := False;
+  Started := MonotonicMs;
   try
     // Up to the accepted request nothing is shown: any failure means "no usable portal".
     try
       Bus := TDBusConnection.Create(Pump);
+      WlLog(TWlLogLevel.Debug, 'portal: connected to the session bus as %s (%d ms)',
+        [Bus.UniqueName, MonotonicMs - Started]);
       Version := GetVersion(Bus);
       if Version < 1 then
         raise EPortalUnsupported.Create('the portal has no usable FileChooser version');
@@ -366,8 +370,8 @@ begin
         Handle := Returned;
         Bus.AddMatch(ResponseMatch(Handle));
       end;
-      WlLog(TWlLogLevel.Debug, 'portal: %s request %s (FileChooser %d, parent "%s")',
-        [Method, Handle, Version, ParentWindow]);
+      WlLog(TWlLogLevel.Debug, 'portal: %s request %s (FileChooser %d, parent "%s", %d ms)',
+        [Method, Handle, Version, ParentWindow, MonotonicMs - Started]);
     except
       on E: EDBusCancelled do
         raise;
@@ -403,8 +407,9 @@ begin
         Exit(False);
       if Code <> ResponseSuccess then
       begin
-        // 2: "ended in some other way" (also a backend that failed); GTK treats it as a cancel too.
-        WlLog(TWlLogLevel.Warning, 'portal: the file dialog ended with response %d', [Code]);
+        // 2: "ended in some other way": xdg-desktop-portal-gtk answers so to Escape and the window's close button,
+        // the portal to a backend that failed. GTK treats it as a cancel too.
+        WlLog(TWlLogLevel.Debug, 'portal: the file dialog ended with response %d (cancelled)', [Code]);
         Exit(False);
       end;
       Results := Response.Body[1];

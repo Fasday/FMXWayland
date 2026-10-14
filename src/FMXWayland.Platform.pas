@@ -2124,10 +2124,13 @@ begin
 end;
 
 function TWlWindow.ExportToplevel: string;
+var
+  Started: Int64;
 begin
   Result := '';
   if (FDisplay = nil) or (FDisplay.FExporter = nil) or (FToplevel = nil) or not FVisible then
     Exit;
+  Started := MonotonicMs;
   if FExported = nil then
   begin
     FExportHandle := '';
@@ -2144,7 +2147,7 @@ begin
     Exit;
   end;
   Inc(FExportCount);
-  WlLog(TWlLogLevel.Debug, 'exported "%s" as %s', [FTitle, FExportHandle]);
+  WlLog(TWlLogLevel.Debug, 'exported "%s" as %s (%d ms)', [FTitle, FExportHandle, MonotonicMs - Started]);
   Result := FExportHandle;
 end;
 

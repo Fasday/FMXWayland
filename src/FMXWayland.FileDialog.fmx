@@ -103,13 +103,14 @@ object FMXWaylandFileDialog: TFMXWaylandFileDialog
         object CancelButton: TButton
           Align = Right
           Size.Width = 110.000000000000000000
+          Margins.Right = 8.000000000000000000
           Text = 'Cancel'
+          Cancel = True
           ModalResult = 2
         end
         object AcceptButton: TButton
           Align = Right
           Size.Width = 160.000000000000000000
-          Margins.Right = 8.000000000000000000
           Text = 'Open'
           OnClick = AcceptClick
         end
