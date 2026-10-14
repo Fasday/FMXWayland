@@ -28,6 +28,7 @@ function Get-HelloSelfTestChecks([string] $Log, [string] $Prefix, [double] $Scal
     "$($Prefix): maximize" = $Log -match 'selftest: maximized True'
     "$($Prefix): restore to 700x540" = $Log -match 'selftest: restored 700x540'
     "$($Prefix): modal loop ended by a timer (mrRetry)" = $Log -match 'selftest: modal result 4'
+    "$($Prefix): message box answered by a timer (mrNo)" = $Log -match 'selftest: message result 7'
     "$($Prefix): self-test done" = $Log -match 'selftest: done'
     "$($Prefix): clean exit" = $Log -match 'exit=0'
   }
