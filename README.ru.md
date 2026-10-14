@@ -20,7 +20,7 @@ libxkbcommon загружаются через `dlopen`) и рисует в бу
 вводом с Windows: `tests\hello-e2e.ps1`) и на headless Weston 14 с масштабом 1 и 2 (`tests\weston-headless.ps1`).
 
 **Канвасы.** Стандартный канвас FMX (`FMX.Canvas.Linux`) работает через функции канваса, текста и кодеков FMUX,
-реализованные в `FMXWayland.Cairo` на системных cairo, Pango и gdk-pixbuf (их прислал Hemul GM, спасибо!); FMX
+реализованные в `FMXWayland.Cairo` на системных cairo, Pango и gdk-pixbuf (их прислал [Hemul GM](https://github.com/HemulGM), спасибо!); FMX
 перерисовывает только изменённую область сохранённого кадра окна. Skia — по желанию: `FMX.Skia` и
 `GlobalUseSkia := True` в программе, `libsk4d.so` рядом с ней.
 
