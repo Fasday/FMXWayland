@@ -41,6 +41,9 @@ type
   TWlPointerEvent = (Move, Down, Up, Wheel, Leave);
   /// <summary>Kinds of key events delivered to windows.</summary>
   TWlKeyEvent = (Down, Up);
+  /// <summary>Parts of client-side decorations.</summary>
+  TWlDecoPart = (None, Title, Minimize, Maximize, Close, Left, Right, Top, Bottom, TopLeft, TopRight, BottomLeft,
+    BottomRight);
 
   /// <summary>A wl_shm buffer (shared memory, 4 bytes per pixel, premultiplied BGRA in memory).</summary>
   TWlBuffer = class
@@ -166,7 +169,29 @@ type
     FExternalPresentation: Boolean;
     FMinWidth: Integer;
     FMinHeight: Integer;
+    // Client-side decorations: a subsurface below the window's surface, around it (title bar and borders).
+    FCsd: Boolean;
+    FDecoSurface: Pwl_surface;
+    FDecoSubsurface: Pwl_subsurface;
+    FDecoBuffers: TObjectList<TWlBuffer>;
+    FDecoDirty: Boolean;
+    FDecoHover: TWlDecoPart;
+    FDecoPressed: TWlDecoPart;
+    FDecoLastClick: Int64;
+    FGeometryX: Integer;
+    FGeometryY: Integer;
+    FGeometryW: Integer;
+    FGeometryH: Integer;
     procedure CreateToplevelRole;
+    procedure EnableCsd;
+    procedure DisableCsd;
+    function DecoPartAt(const AX, AY: Single): TWlDecoPart;
+    procedure DecoPointer(const AEvent: TWlPointerEvent; const AX, AY: Single; const AState: Integer;
+      const ASerial: UInt32);
+    procedure DecoAction(const APart: TWlDecoPart);
+    procedure PaintDecorations;
+    procedure UpdateGeometry;
+    function InsetsFor(const AState: TWlWindowState; const AFullScreen: Boolean): TRect;
     procedure CreatePopupRole;
     procedure DestroyRole;
     procedure HideChildPopups;
@@ -199,6 +224,10 @@ type
     procedure DoKey(const AEvent: TWlKeyEvent; const AKey: Word; const AChar: Char; const AState: Integer); virtual;
     /// <summary>The window's scale changed.</summary>
     procedure DoScaleChanged; virtual;
+    /// <summary>Draws the title of client-side decorations into ARect (buffer pixels) of AFrame (premultiplied BGRA);
+    /// the core has no text renderer, the FMX layer draws it with a Skia bitmap.</summary>
+    procedure DoDrawTitle(const AFrame: PWlFrame; const ARect: TRect; const ATitle: string; const AActive: Boolean);
+      virtual;
   public
     constructor Create(const ADisplay: TWlDisplay; const AKind: TWlWindowKind; const ATransparent: Boolean);
     destructor Destroy; override;
@@ -228,7 +257,14 @@ type
     function ScreenToClient(const APoint: TPointF): TPointF;
     /// <summary>The output the window is on (the first it entered), or nil.</summary>
     function CurrentOutput: TWlOutput;
+    /// <summary>Widths of the client-side decorations on each side (logical pixels; all 0 without them).</summary>
+    function DecorationInsets: TRect;
+    /// <summary>Decides whether a toplevel draws its own decorations (call after setting Borderless, before the
+    /// first SetBounds): when the compositor has no xdg-decoration and FMXWAYLAND_CSD is not 0.</summary>
+    procedure PrepareDecorations;
     property Display: TWlDisplay read FDisplay;
+    /// <summary>The window draws its own decorations (the compositor offers no server-side ones).</summary>
+    property Csd: Boolean read FCsd;
     property Kind: TWlWindowKind read FKind;
     property Surface: Pwl_surface read FSurface;
     property XdgSurface: Pxdg_surface read FXdgSurface;
@@ -282,6 +318,7 @@ type
     FRegistry: Pwl_registry;
     FCompositor: Pwl_compositor;
     FCompositorVersion: UInt32;
+    FSubcompositor: Pwl_subcompositor;
     FShm: Pwl_shm;
     FWmBase: Pxdg_wm_base;
     FSeat: Pwl_seat;
@@ -308,6 +345,8 @@ type
     FPointer: Pwl_pointer;
     FCursorShapeDevice: Pwp_cursor_shape_device_v1;
     FPointerWindow: TWlWindow;
+    FPointerOnDeco: Boolean;
+    FDecoCursor: Integer;
     FPointerPos: TPointF;
     FPointerSerial: UInt32;
     FButtons: Integer;
@@ -444,6 +483,8 @@ uses
 
 var
   GDisplay: TWlDisplay = nil;
+  // Set when the connection goes away: objects destroyed later must not touch their (freed) proxies.
+  GDisconnected: Boolean = False;
 
 function WlDisplay: TWlDisplay;
 begin
@@ -683,7 +724,9 @@ begin
   W := TWlWindow(AData);
   if W.FParent <> nil then
   begin
-    NewOrigin := PointF(W.FParent.FOrigin.X + AX, W.FParent.FOrigin.Y + AY);
+    // AX, AY: relative to the parent's window geometry (its decorations included).
+    NewOrigin := PointF(W.FParent.FOrigin.X + AX - W.FParent.DecorationInsets.Left,
+      W.FParent.FOrigin.Y + AY - W.FParent.DecorationInsets.Top);
     if (Abs(NewOrigin.X - W.FOrigin.X) >= 1) or (Abs(NewOrigin.Y - W.FOrigin.Y) >= 1) then
     begin
       W.FOrigin := NewOrigin;
@@ -713,9 +756,35 @@ const
 
 procedure DecorationConfigure(AData: Pointer; AZxdgToplevelDecorationV1: Pzxdg_toplevel_decoration_v1;
   AMode: UInt32); cdecl;
+var
+  W: TWlWindow;
 begin
   WlLog(TWlLogLevel.Debug, 'decoration mode %d', [AMode]);
+  W := TWlWindow(AData);
+  // The compositor wants the client to decorate (it may say so even though it offers the protocol).
+  if (AMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) and not W.FBorderless then
+    W.EnableCsd
+  else if AMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE then
+    W.DisableCsd;
 end;
+
+procedure DecoSurfaceEnter(AData: Pointer; AWlSurface: Pwl_surface; AOutput: Pwl_output); cdecl;
+begin
+end;
+
+procedure DecoSurfaceLeave(AData: Pointer; AWlSurface: Pwl_surface; AOutput: Pwl_output); cdecl;
+begin
+end;
+
+procedure DecoSurfacePreferredBufferScale(AData: Pointer; AWlSurface: Pwl_surface; AFactor: Int32); cdecl;
+begin
+end;
+
+const
+  // The decoration surface's user data is its window (pointer events find it); its scale follows the window's.
+  CDecoSurfaceListener: Twl_surface_listener = (enter: DecoSurfaceEnter; leave: DecoSurfaceLeave;
+    preferred_buffer_scale: DecoSurfacePreferredBufferScale;
+    preferred_buffer_transform: SurfacePreferredBufferTransform);
 
 const
   CDecorationListener: Tzxdg_toplevel_decoration_v1_listener = (configure: DecorationConfigure);
@@ -764,11 +833,19 @@ var
 begin
   D := TWlDisplay(AData);
   D.FPointerWindow := D.WindowFromSurface(ASurface);
+  D.FPointerOnDeco := (D.FPointerWindow <> nil) and (ASurface = D.FPointerWindow.FDecoSurface);
   D.FPointerSerial := ASerial;
   D.FPointerPos := PointF(wl_fixed_to_double(ASurfaceX), wl_fixed_to_double(ASurfaceY));
-  D.ApplyCursor;
-  if D.FPointerWindow <> nil then
+  D.FDecoCursor := crDefault;
+  if D.FPointerWindow = nil then
+    Exit;
+  if D.FPointerOnDeco then
+    D.FPointerWindow.DecoPointer(TWlPointerEvent.Move, D.FPointerPos.X, D.FPointerPos.Y, 0, ASerial)
+  else
+  begin
+    D.ApplyCursor;
     D.FPointerWindow.DoPointer(TWlPointerEvent.Move, D.FPointerPos.X, D.FPointerPos.Y, D.FModState or D.FButtons, 0);
+  end;
 end;
 
 procedure PointerLeave(AData: Pointer; AWlPointer: Pwl_pointer; ASerial: UInt32; ASurface: Pwl_surface); cdecl;
@@ -780,8 +857,13 @@ begin
   W := D.FPointerWindow;
   D.FPointerWindow := nil;
   D.FButtons := 0;
-  if W <> nil then
+  if W = nil then
+    Exit;
+  if D.FPointerOnDeco then
+    W.DecoPointer(TWlPointerEvent.Leave, -1, -1, 0, ASerial)
+  else
     W.DoPointer(TWlPointerEvent.Leave, D.FPointerPos.X, D.FPointerPos.Y, D.FModState, 0);
+  D.FPointerOnDeco := False;
 end;
 
 procedure PointerMotion(AData: Pointer; AWlPointer: Pwl_pointer; ATime: UInt32; ASurfaceX,
@@ -791,7 +873,11 @@ var
 begin
   D := TWlDisplay(AData);
   D.FPointerPos := PointF(wl_fixed_to_double(ASurfaceX), wl_fixed_to_double(ASurfaceY));
-  if D.FPointerWindow <> nil then
+  if D.FPointerWindow = nil then
+    Exit;
+  if D.FPointerOnDeco then
+    D.FPointerWindow.DecoPointer(TWlPointerEvent.Move, D.FPointerPos.X, D.FPointerPos.Y, 0, D.FPointerSerial)
+  else
     D.FPointerWindow.DoPointer(TWlPointerEvent.Move, D.FPointerPos.X, D.FPointerPos.Y, D.FModState or D.FButtons, 0);
 end;
 
@@ -814,6 +900,14 @@ begin
   end;
   W := D.FPointerWindow;
   D.FLastInputSerial := ASerial;
+  if (W <> nil) and D.FPointerOnDeco then
+  begin
+    if AState = WL_POINTER_BUTTON_STATE_PRESSED then
+      W.DecoPointer(TWlPointerEvent.Down, D.FPointerPos.X, D.FPointerPos.Y, Bit, ASerial)
+    else
+      W.DecoPointer(TWlPointerEvent.Up, D.FPointerPos.X, D.FPointerPos.Y, Bit, ASerial);
+    Exit;
+  end;
   if AState = WL_POINTER_BUTTON_STATE_PRESSED then
   begin
     D.FLastInputWindow := W;
@@ -1119,7 +1213,7 @@ end;
 
 destructor TWlBuffer.Destroy;
 begin
-  if FBuffer <> nil then
+  if (FBuffer <> nil) and not GDisconnected then
     wl_buffer_destroy(FBuffer);
   if FData <> nil then
     munmap(FData, FSize);
@@ -1183,6 +1277,7 @@ begin
   FKind := AKind;
   FTransparent := ATransparent;
   FBuffers := TObjectList<TWlBuffer>.Create(True);
+  FDecoBuffers := TObjectList<TWlBuffer>.Create(True);
   FEnteredOutputs := TList<Pwl_output>.Create;
   FWidth := 1;
   FHeight := 1;
@@ -1208,7 +1303,7 @@ destructor TWlWindow.Destroy;
 var
   W: TWlWindow;
 begin
-  if FDisplay <> nil then
+  if (FDisplay <> nil) and not GDisconnected then
   begin
     if FVisible then
       Hide;
@@ -1216,20 +1311,23 @@ begin
       if W.FParent = Self then
         W.FParent := nil;
     FDisplay.RemoveWindow(Self);
+    if FFrameCallback <> nil then
+      wl_callback_destroy(FFrameCallback);
+    DisableCsd;
+    DestroyRole;
+    if FViewport <> nil then
+      wp_viewport_destroy(FViewport);
+    if FFractional <> nil then
+      wp_fractional_scale_v1_destroy(FFractional);
   end;
-  if FFrameCallback <> nil then
-    wl_callback_destroy(FFrameCallback);
-  DestroyRole;
-  if FViewport <> nil then
-    wp_viewport_destroy(FViewport);
-  if FFractional <> nil then
-    wp_fractional_scale_v1_destroy(FFractional);
+  FDecoBuffers.Free;
   FBuffers.Free;
-  if FSurface <> nil then
+  if (FSurface <> nil) and (FDisplay <> nil) and not GDisconnected then
+  begin
     wl_surface_destroy(FSurface);
-  FEnteredOutputs.Free;
-  if FDisplay <> nil then
     FDisplay.Flush;
+  end;
+  FEnteredOutputs.Free;
   inherited;
 end;
 
@@ -1342,18 +1440,463 @@ begin
   end;
 end;
 
+{$REGION 'Client-side decorations'}
+
+const
+  // Logical pixels.
+  CDecoTitleHeight = 30;
+  CDecoBorder = 4;
+  CDecoButtonWidth = 40;
+  CDecoCorner = 14;
+  // Colors (premultiplied ARGB, opaque).
+  CDecoTitleActive = $FFE6E6E4;
+  CDecoTitleInactive = $FFF4F4F2;
+  CDecoOutline = $FF9C9C98;
+  CDecoSeparator = $FFC8C8C5;
+  CDecoIcon = $FF3A3A3A;
+  CDecoIconInactive = $FF9A9A9A;
+  CDecoHoverButton = $FFD2D2CF;
+  CDecoPressedButton = $FFBDBDBA;
+  CDecoHoverClose = $FFE81123;
+  CDecoPressedClose = $FFB80F1D;
+
+function DecoEnvAllowed: Boolean;
+begin
+  Result := GetEnvironmentVariable('FMXWAYLAND_CSD') <> '0';
+end;
+
+procedure TWlWindow.PrepareDecorations;
+begin
+  if (FKind = TWlWindowKind.Toplevel) and not FBorderless and (FDisplay.FDecorationManager = nil) and
+    DecoEnvAllowed then
+    EnableCsd;
+end;
+
+procedure TWlWindow.EnableCsd;
+begin
+  if FCsd or (FDisplay.FSubcompositor = nil) or not DecoEnvAllowed then
+    Exit;
+  FDecoSurface := wl_compositor_create_surface(FDisplay.FCompositor);
+  wl_surface_add_listener(FDecoSurface, @CDecoSurfaceListener, Self);
+  FDecoSubsurface := wl_subcompositor_get_subsurface(FDisplay.FSubcompositor, FDecoSurface, FSurface);
+  wl_subsurface_place_below(FDecoSubsurface, FSurface);
+  FCsd := True;
+  FDecoDirty := True;
+  FGeometryW := -1;
+  InvalidateAll;
+end;
+
+procedure TWlWindow.DisableCsd;
+begin
+  if not FCsd then
+    Exit;
+  FCsd := False;
+  if FDisplay.FPointerWindow = Self then
+    FDisplay.FPointerOnDeco := False;
+  wl_subsurface_destroy(FDecoSubsurface);
+  FDecoSubsurface := nil;
+  wl_surface_destroy(FDecoSurface);
+  FDecoSurface := nil;
+  FDecoBuffers.Clear;
+  FGeometryW := -1;
+  InvalidateAll;
+end;
+
+function TWlWindow.InsetsFor(const AState: TWlWindowState; const AFullScreen: Boolean): TRect;
+begin
+  if not FCsd or AFullScreen then
+    Result := Rect(0, 0, 0, 0)
+  else if AState = TWlWindowState.Maximized then
+    Result := Rect(0, CDecoTitleHeight, 0, 0)
+  else
+    Result := Rect(CDecoBorder, CDecoTitleHeight, CDecoBorder, CDecoBorder);
+end;
+
+function TWlWindow.DecorationInsets: TRect;
+begin
+  Result := InsetsFor(FState, FFullScreen);
+end;
+
+procedure TWlWindow.UpdateGeometry;
+var
+  Ins: TRect;
+  X, Y, W, H: Integer;
+begin
+  if (FXdgSurface = nil) or not (FCsd or (FGeometryW <> 0)) then
+    Exit;
+  Ins := DecorationInsets;
+  X := -Ins.Left;
+  Y := -Ins.Top;
+  W := FWidth + Ins.Left + Ins.Right;
+  H := FHeight + Ins.Top + Ins.Bottom;
+  if (X = FGeometryX) and (Y = FGeometryY) and (W = FGeometryW) and (H = FGeometryH) then
+    Exit;
+  // The window geometry includes the decorations, which lie at negative coordinates of the window's surface.
+  xdg_surface_set_window_geometry(FXdgSurface, X, Y, W, H);
+  if FDecoSubsurface <> nil then
+    wl_subsurface_set_position(FDecoSubsurface, X, Y);
+  FGeometryX := X;
+  FGeometryY := Y;
+  FGeometryW := W;
+  FGeometryH := H;
+  FDecoDirty := True;
+end;
+
+procedure FillFrame(const AFrame: TWlFrame; const AX, AY, AWidth, AHeight: Integer; const AColor: Cardinal);
+var
+  X0, Y0, X1, Y1, X, Y: Integer;
+  P: PCardinal;
+begin
+  X0 := Max(AX, 0);
+  Y0 := Max(AY, 0);
+  X1 := Min(AX + AWidth, AFrame.Width);
+  Y1 := Min(AY + AHeight, AFrame.Height);
+  for Y := Y0 to Y1 - 1 do
+  begin
+    P := PCardinal(PByte(AFrame.Bits) + NativeInt(Y) * AFrame.Stride + X0 * 4);
+    for X := X0 to X1 - 1 do
+    begin
+      P^ := AColor;
+      Inc(P);
+    end;
+  end;
+end;
+
+/// A line of thickness AThick (buffer pixels) from (X0,Y0) to (X1,Y1), drawn as squares along it.
+procedure LineFrame(const AFrame: TWlFrame; const X0, Y0, X1, Y1, AThick: Integer; const AColor: Cardinal);
+var
+  N, I: Integer;
+begin
+  N := Max(1, Max(Abs(X1 - X0), Abs(Y1 - Y0)));
+  for I := 0 to N do
+    FillFrame(AFrame, X0 + ((X1 - X0) * I) div N - AThick div 2, Y0 + ((Y1 - Y0) * I) div N - AThick div 2, AThick,
+      AThick, AColor);
+end;
+
+procedure TWlWindow.PaintDecorations;
+var
+  Ins: TRect;
+  S, TW, TH, BW, BH, I, Right, BtnTop, BtnX, CX, CY, R, Thick: Integer;
+  Buf: TWlBuffer;
+  Frame: TWlFrame;
+  Part: TWlDecoPart;
+  Bg, Fg: Cardinal;
+  Maximized: Boolean;
+begin
+  if not FCsd or not FDecoDirty then
+    Exit;
+  if FFullScreen then
+  begin
+    wl_surface_attach(FDecoSurface, nil, 0, 0);
+    wl_surface_commit(FDecoSurface);
+    FDecoDirty := False;
+    Exit;
+  end;
+  Ins := DecorationInsets;
+  Maximized := FState = TWlWindowState.Maximized;
+  // An integer buffer scale for the decorations (also under a fractional scale: they are small).
+  S := Max(1, Ceil(FScale - 0.01));
+  TW := FWidth + Ins.Left + Ins.Right;
+  TH := FHeight + Ins.Top + Ins.Bottom;
+  BW := TW * S;
+  BH := TH * S;
+  Buf := nil;
+  for I := FDecoBuffers.Count - 1 downto 0 do
+    if not FDecoBuffers[I].Busy then
+    begin
+      if (FDecoBuffers[I].Width = BW) and (FDecoBuffers[I].Height = BH) then
+        Buf := FDecoBuffers[I]
+      else
+        FDecoBuffers.Delete(I);
+    end;
+  if Buf = nil then
+  begin
+    if FDecoBuffers.Count >= 2 then
+      Exit; // both with the compositor: try again later
+    Buf := TWlBuffer.Create(FDisplay, BW, BH, WL_SHM_FORMAT_ARGB8888);
+    FDecoBuffers.Add(Buf);
+  end;
+  Frame.Bits := Buf.Data;
+  Frame.Stride := Buf.Stride;
+  Frame.Width := BW;
+  Frame.Height := BH;
+  Frame.Scale := S;
+  Frame.Drawn := False;
+  if FActivated then
+    Bg := CDecoTitleActive
+  else
+    Bg := CDecoTitleInactive;
+  FillFrame(Frame, 0, 0, BW, BH, Bg);
+  // A transparent hole where the window's own surface is (it lies above; some compositors - WSLg - also show the
+  // stacking of subsurfaces differently).
+  FillFrame(Frame, Ins.Left * S, Ins.Top * S, FWidth * S, FHeight * S, 0);
+  if not Maximized then
+  begin
+    FillFrame(Frame, 0, 0, BW, S, CDecoOutline);
+    FillFrame(Frame, 0, BH - S, BW, S, CDecoOutline);
+    FillFrame(Frame, 0, 0, S, BH, CDecoOutline);
+    FillFrame(Frame, BW - S, 0, S, BH, CDecoOutline);
+  end;
+  FillFrame(Frame, Ins.Left * S, (Ins.Top - 1) * S, FWidth * S, S, CDecoSeparator);
+  // Buttons: minimize, maximize, close from the right.
+  Right := TW - Ins.Right;
+  if Maximized then
+    BtnTop := 0
+  else
+    BtnTop := CDecoBorder;
+  Thick := Max(1, Round(1.2 * S));
+  for Part in [TWlDecoPart.Close, TWlDecoPart.Maximize, TWlDecoPart.Minimize] do
+  begin
+    case Part of
+      TWlDecoPart.Close:
+        BtnX := Right - CDecoButtonWidth;
+      TWlDecoPart.Maximize:
+        BtnX := Right - 2 * CDecoButtonWidth;
+    else
+      BtnX := Right - 3 * CDecoButtonWidth;
+    end;
+    if FActivated then
+      Fg := CDecoIcon
+    else
+      Fg := CDecoIconInactive;
+    if (FDecoPressed = Part) and (FDecoHover = Part) then
+    begin
+      if Part = TWlDecoPart.Close then
+        FillFrame(Frame, BtnX * S, BtnTop * S, CDecoButtonWidth * S, (Ins.Top - 1 - BtnTop) * S, CDecoPressedClose)
+      else
+        FillFrame(Frame, BtnX * S, BtnTop * S, CDecoButtonWidth * S, (Ins.Top - 1 - BtnTop) * S, CDecoPressedButton);
+      if Part = TWlDecoPart.Close then
+        Fg := $FFFFFFFF;
+    end
+    else if FDecoHover = Part then
+    begin
+      if Part = TWlDecoPart.Close then
+      begin
+        FillFrame(Frame, BtnX * S, BtnTop * S, CDecoButtonWidth * S, (Ins.Top - 1 - BtnTop) * S, CDecoHoverClose);
+        Fg := $FFFFFFFF;
+      end
+      else
+        FillFrame(Frame, BtnX * S, BtnTop * S, CDecoButtonWidth * S, (Ins.Top - 1 - BtnTop) * S, CDecoHoverButton);
+    end;
+    CX := (BtnX + CDecoButtonWidth div 2) * S;
+    CY := ((BtnTop + Ins.Top - 1) * S) div 2;
+    R := 5 * S;
+    case Part of
+      TWlDecoPart.Close:
+        begin
+          LineFrame(Frame, CX - R, CY - R, CX + R, CY + R, Thick, Fg);
+          LineFrame(Frame, CX - R, CY + R, CX + R, CY - R, Thick, Fg);
+        end;
+      TWlDecoPart.Maximize:
+        if Maximized then
+        begin
+          // Two overlapping squares: restore.
+          FillFrame(Frame, CX - R + 2 * S, CY - R, 2 * R - 2 * S, Thick, Fg);
+          FillFrame(Frame, CX + R - Thick, CY - R, Thick, 2 * R - 2 * S, Fg);
+          FillFrame(Frame, CX - R, CY - R + 2 * S, 2 * R - 2 * S, Thick, Fg);
+          FillFrame(Frame, CX - R, CY + R - Thick, 2 * R - 2 * S, Thick, Fg);
+          FillFrame(Frame, CX - R, CY - R + 2 * S, Thick, 2 * R - 2 * S, Fg);
+          FillFrame(Frame, CX + R - 2 * S - Thick, CY - R + 2 * S, Thick, 2 * R - 2 * S, Fg);
+        end
+        else
+        begin
+          FillFrame(Frame, CX - R, CY - R, 2 * R, Thick, Fg);
+          FillFrame(Frame, CX - R, CY + R - Thick, 2 * R, Thick, Fg);
+          FillFrame(Frame, CX - R, CY - R, Thick, 2 * R, Fg);
+          FillFrame(Frame, CX + R - Thick, CY - R, Thick, 2 * R, Fg);
+        end;
+      TWlDecoPart.Minimize:
+        FillFrame(Frame, CX - R, CY + R - Thick, 2 * R, Thick, Fg);
+    end;
+  end;
+  DoDrawTitle(@Frame, Rect((Ins.Left + 10) * S, BtnTop * S, (Right - 3 * CDecoButtonWidth - 8) * S, (Ins.Top - 1) * S),
+    FTitle, FActivated);
+  wl_surface_attach(FDecoSurface, Buf.Buffer, 0, 0);
+  if FDisplay.FCompositorVersion >= 3 then
+    wl_surface_set_buffer_scale(FDecoSurface, S);
+  wl_surface_damage(FDecoSurface, 0, 0, TW, TH);
+  // A synchronized subsurface: this takes effect with the next commit of the window's surface.
+  wl_surface_commit(FDecoSurface);
+  Buf.Busy := True;
+  FDecoDirty := False;
+end;
+
+function TWlWindow.DecoPartAt(const AX, AY: Single): TWlDecoPart;
+var
+  Ins: TRect;
+  TW, TH, Right: Integer;
+  L, R, T, B: Boolean;
+begin
+  Result := TWlDecoPart.None;
+  if not FCsd then
+    Exit;
+  Ins := DecorationInsets;
+  TW := FWidth + Ins.Left + Ins.Right;
+  TH := FHeight + Ins.Top + Ins.Bottom;
+  if FState <> TWlWindowState.Maximized then
+  begin
+    L := AX < CDecoBorder;
+    R := AX >= TW - CDecoBorder;
+    T := AY < CDecoBorder;
+    B := AY >= TH - CDecoBorder;
+    // Corners are larger than the borders: easier to grab.
+    if L or R then
+    begin
+      T := T or (AY < CDecoCorner);
+      B := B or (AY >= TH - CDecoCorner);
+    end;
+    if T or B then
+    begin
+      L := L or (AX < CDecoCorner);
+      R := R or (AX >= TW - CDecoCorner);
+    end;
+    if T and L then
+      Exit(TWlDecoPart.TopLeft);
+    if T and R then
+      Exit(TWlDecoPart.TopRight);
+    if B and L then
+      Exit(TWlDecoPart.BottomLeft);
+    if B and R then
+      Exit(TWlDecoPart.BottomRight);
+    if L then
+      Exit(TWlDecoPart.Left);
+    if R then
+      Exit(TWlDecoPart.Right);
+    if T then
+      Exit(TWlDecoPart.Top);
+    if B then
+      Exit(TWlDecoPart.Bottom);
+  end;
+  if AY < Ins.Top then
+  begin
+    Right := TW - Ins.Right;
+    if AX >= Right - CDecoButtonWidth then
+      Result := TWlDecoPart.Close
+    else if AX >= Right - 2 * CDecoButtonWidth then
+      Result := TWlDecoPart.Maximize
+    else if AX >= Right - 3 * CDecoButtonWidth then
+      Result := TWlDecoPart.Minimize
+    else
+      Result := TWlDecoPart.Title;
+  end;
+end;
+
+procedure TWlWindow.DecoPointer(const AEvent: TWlPointerEvent; const AX, AY: Single; const AState: Integer;
+  const ASerial: UInt32);
+const
+  CEdges: array[TWlDecoPart] of UInt32 = (0, 0, 0, 0, 0, XDG_TOPLEVEL_RESIZE_EDGE_LEFT,
+    XDG_TOPLEVEL_RESIZE_EDGE_RIGHT, XDG_TOPLEVEL_RESIZE_EDGE_TOP, XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM,
+    XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT, XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT, XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT,
+    XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT);
+  CCursors: array[TWlDecoPart] of Integer = (crDefault, crDefault, crDefault, crDefault, crDefault, crSizeWE,
+    crSizeWE, crSizeNS, crSizeNS, crSizeNWSE, crSizeNESW, crSizeNESW, crSizeNWSE);
+  CButtons = [TWlDecoPart.Minimize, TWlDecoPart.Maximize, TWlDecoPart.Close];
+var
+  Part: TWlDecoPart;
+  Now: Int64;
+begin
+  if FToplevel = nil then
+    Exit;
+  if AEvent = TWlPointerEvent.Leave then
+    Part := TWlDecoPart.None
+  else
+    Part := DecoPartAt(AX, AY);
+  if Part <> FDecoHover then
+  begin
+    if (Part in CButtons) or (FDecoHover in CButtons) then
+      FDecoDirty := True;
+    FDecoHover := Part;
+  end;
+  if AEvent <> TWlPointerEvent.Leave then
+    if CCursors[Part] <> FDisplay.FDecoCursor then
+    begin
+      FDisplay.FDecoCursor := CCursors[Part];
+      FDisplay.ApplyCursor;
+    end;
+  case AEvent of
+    TWlPointerEvent.Leave:
+      if FDecoPressed <> TWlDecoPart.None then
+      begin
+        FDecoPressed := TWlDecoPart.None;
+        FDecoDirty := True;
+      end;
+    TWlPointerEvent.Down:
+      if AState = WL_STATE_LEFT then
+      begin
+        if Part = TWlDecoPart.Title then
+        begin
+          Now := MonotonicMs;
+          if Now - FDecoLastClick <= CDoubleClickMs then
+          begin
+            FDecoLastClick := 0;
+            DecoAction(TWlDecoPart.Maximize);
+          end
+          else
+          begin
+            FDecoLastClick := Now;
+            xdg_toplevel_move(FToplevel, FDisplay.FSeat, ASerial);
+          end;
+        end
+        else if Part in CButtons then
+        begin
+          FDecoPressed := Part;
+          FDecoDirty := True;
+        end
+        else if CEdges[Part] <> 0 then
+          xdg_toplevel_resize(FToplevel, FDisplay.FSeat, ASerial, CEdges[Part]);
+      end
+      else if (AState = WL_STATE_RIGHT) and (Part = TWlDecoPart.Title) then
+        xdg_toplevel_show_window_menu(FToplevel, FDisplay.FSeat, ASerial, Round(AX), Round(AY));
+    TWlPointerEvent.Up:
+      if (AState = WL_STATE_LEFT) and (FDecoPressed <> TWlDecoPart.None) then
+      begin
+        Part := FDecoPressed;
+        FDecoPressed := TWlDecoPart.None;
+        FDecoDirty := True;
+        if Part = FDecoHover then
+          DecoAction(Part);
+      end;
+  end;
+  FDisplay.Flush;
+end;
+
+procedure TWlWindow.DecoAction(const APart: TWlDecoPart);
+begin
+  case APart of
+    TWlDecoPart.Close:
+      DoCloseRequest;
+    TWlDecoPart.Maximize:
+      if FState = TWlWindowState.Maximized then
+        xdg_toplevel_unset_maximized(FToplevel)
+      else
+        xdg_toplevel_set_maximized(FToplevel);
+    TWlDecoPart.Minimize:
+      xdg_toplevel_set_minimized(FToplevel);
+  end;
+end;
+
+procedure TWlWindow.DoDrawTitle(const AFrame: PWlFrame; const ARect: TRect; const ATitle: string;
+  const AActive: Boolean);
+begin
+end;
+
+{$ENDREGION}
+
 procedure TWlWindow.CreatePopupRole;
 var
   Positioner: Pxdg_positioner;
   RelX, RelY, AX, AY: Integer;
+  PIns: TRect;
 begin
   Positioner := xdg_wm_base_create_positioner(FDisplay.FWmBase);
   xdg_positioner_set_size(Positioner, Max(1, FWidth), Max(1, FHeight));
-  RelX := Round(FOrigin.X - FParent.FOrigin.X);
-  RelY := Round(FOrigin.Y - FParent.FOrigin.Y);
+  // Relative to the parent's window geometry, which starts at its decorations.
+  PIns := FParent.DecorationInsets;
+  RelX := Round(FOrigin.X - FParent.FOrigin.X) + PIns.Left;
+  RelY := Round(FOrigin.Y - FParent.FOrigin.Y) + PIns.Top;
   // The anchor point stays inside the parent; the rest of the distance is an offset.
-  AX := EnsureRange(RelX, 0, Max(0, FParent.FWidth - 1));
-  AY := EnsureRange(RelY, 0, Max(0, FParent.FHeight - 1));
+  AX := EnsureRange(RelX, 0, Max(0, FParent.FWidth + PIns.Left + PIns.Right - 1));
+  AY := EnsureRange(RelY, 0, Max(0, FParent.FHeight + PIns.Top + PIns.Bottom - 1));
   xdg_positioner_set_anchor_rect(Positioner, AX, AY, 1, 1);
   xdg_positioner_set_anchor(Positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT);
   xdg_positioner_set_gravity(Positioner, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
@@ -1429,7 +1972,9 @@ begin
       xdg_toplevel_set_app_id(FToplevel, PAnsiChar(UTF8String(FDisplay.FAppId)));
     SetTransientParent;
     if (FMinWidth > 0) or (FMinHeight > 0) then
-      xdg_toplevel_set_min_size(FToplevel, FMinWidth, FMinHeight);
+      SetMinSize(FMinWidth, FMinHeight);
+    FGeometryW := -1;
+    FDecoDirty := True;
     if FState = TWlWindowState.Maximized then
       xdg_toplevel_set_maximized(FToplevel);
     if FFullScreen then
@@ -1488,6 +2033,7 @@ var
   WasConfigured, SizeChanged, StateChanged: Boolean;
   W, H: Integer;
   NewState: TWlWindowState;
+  Ins: TRect;
 begin
   xdg_surface_ack_configure(FXdgSurface, ASerial);
   if FToplevel <> nil then
@@ -1505,6 +2051,13 @@ begin
       NewState := TWlWindowState.Normal;
     W := FPendingWidth;
     H := FPendingHeight;
+    if (W > 0) and (H > 0) then
+    begin
+      // The size is the window geometry's: without the decorations of the new state.
+      Ins := InsetsFor(NewState, FPendingFullScreen);
+      W := Max(1, W - Ins.Left - Ins.Right);
+      H := Max(1, H - Ins.Top - Ins.Bottom);
+    end;
     if (FState = TWlWindowState.Normal) and not FFullScreen and (FPendingMaximized or FPendingFullScreen) then
     begin
       FNormalWidth := FWidth;
@@ -1524,15 +2077,19 @@ begin
       SizeChanged := True;
       FFullDamage := True;
     end;
+    if (FFullScreen <> FPendingFullScreen) or (NewState <> FState) or (FPendingActivated <> FActivated) or
+      SizeChanged then
+      FDecoDirty := True;
     FFullScreen := FPendingFullScreen;
     StateChanged := (NewState <> FState) and (FState <> TWlWindowState.Minimized);
     if FState = TWlWindowState.Minimized then
       StateChanged := NewState = TWlWindowState.Maximized;
     FState := NewState;
-    if SizeChanged then
-      DoResized;
+    // The state first: FMX's OnResize of a maximized form sees wsMaximized.
     if StateChanged then
       DoStateChanged(FState);
+    if SizeChanged or (FCsd and StateChanged) then
+      DoResized;
     if FPendingActivated <> FActivated then
     begin
       FActivated := FPendingActivated;
@@ -1546,7 +2103,7 @@ end;
 function TWlWindow.NeedsPaint(const ANow: Int64): Boolean;
 begin
   // A frame callback that does not come (the compositor does not show the window) must not stop painting forever.
-  Result := FVisible and FConfigured and not FDirty.IsEmpty and
+  Result := FVisible and FConfigured and (not FDirty.IsEmpty or (FCsd and FDecoDirty and FMapped)) and
     ((FFrameCallback = nil) or (ANow - FFrameRequestedAt > 1000));
 end;
 
@@ -1580,8 +2137,19 @@ var
   R: TRect;
   Region: Pwl_region;
 begin
-  if not (FVisible and FConfigured) or FDirty.IsEmpty then
+  if not (FVisible and FConfigured) then
     Exit;
+  if FDirty.IsEmpty then
+  begin
+    // Only the decorations changed (hover, activation): they apply with a commit of the window's surface.
+    if FCsd and FDecoDirty and FMapped then
+    begin
+      UpdateGeometry;
+      PaintDecorations;
+      wl_surface_commit(FSurface);
+    end;
+    Exit;
+  end;
   BW := BufferWidth;
   BH := BufferHeight;
   Buf := nil;
@@ -1613,6 +2181,8 @@ begin
     wl_surface_set_buffer_scale(FSurface, FIntScale);
     FLastBufferScale := FIntScale;
   end;
+  UpdateGeometry;
+  PaintDecorations;
   if (Buf = nil) or not Frame.Drawn then
     Exit;
   wl_surface_attach(FSurface, Buf.Buffer, 0, 0);
@@ -1712,6 +2282,7 @@ end;
 procedure TWlWindow.SetTitle(const ATitle: string);
 begin
   FTitle := ATitle;
+  FDecoDirty := True;
   if FToplevel <> nil then
   begin
     xdg_toplevel_set_title(FToplevel, PAnsiChar(UTF8String(ATitle)));
@@ -1762,11 +2333,16 @@ begin
 end;
 
 procedure TWlWindow.SetMinSize(const AWidth, AHeight: Integer);
+var
+  Ins: TRect;
 begin
   FMinWidth := Max(0, AWidth);
   FMinHeight := Max(0, AHeight);
   if FToplevel <> nil then
-    xdg_toplevel_set_min_size(FToplevel, FMinWidth, FMinHeight);
+  begin
+    Ins := InsetsFor(TWlWindowState.Normal, False);
+    xdg_toplevel_set_min_size(FToplevel, FMinWidth + Ins.Left + Ins.Right, FMinHeight + Ins.Top + Ins.Bottom);
+  end;
 end;
 
 function TWlWindow.ClientToScreen(const APoint: TPointF): TPointF;
@@ -1820,6 +2396,7 @@ destructor TWlDisplay.Destroy;
 var
   W: TWlWindow;
 begin
+  GDisconnected := True;
   StopKeyRepeat;
   FTimers.Clear;
   // Windows still alive belong to their owners; they only lose the connection.
@@ -1911,6 +2488,8 @@ begin
     FCompositorVersion := Min(AVersion, 6);
     FCompositor := wl_registry_bind(FRegistry, AName, @wl_compositor_interface, FCompositorVersion);
   end
+  else if AInterface = 'wl_subcompositor' then
+    FSubcompositor := wl_registry_bind(FRegistry, AName, @wl_subcompositor_interface, 1)
   else if AInterface = 'wl_shm' then
     FShm := wl_registry_bind(FRegistry, AName, @wl_shm_interface, 1)
   else if AInterface = 'xdg_wm_base' then
@@ -2330,7 +2909,7 @@ begin
   FAxisDiscrete := 0;
   FAxis120 := 0;
   FHasAxis := False;
-  if (Delta <> 0) and (FPointerWindow <> nil) then
+  if (Delta <> 0) and (FPointerWindow <> nil) and not FPointerOnDeco then
     FPointerWindow.DoPointer(TWlPointerEvent.Wheel, FPointerPos.X, FPointerPos.Y, FModState or FButtons, Delta);
 end;
 
@@ -2454,29 +3033,35 @@ var
   C: Pwl_cursor;
   Img: Pwl_cursor_image;
   N: string;
+  Cursor: Integer;
 begin
   if (FPointer = nil) or (FPointerWindow = nil) then
     Exit;
-  if FCursor = crNone then
+  // Over client-side decorations the decoration's cursor (resize arrows), over the client FMX's.
+  if FPointerOnDeco then
+    Cursor := FDecoCursor
+  else
+    Cursor := FCursor;
+  if Cursor = crNone then
   begin
     wl_pointer_set_cursor(FPointer, FPointerSerial, nil, 0, 0);
     Exit;
   end;
   if FCursorShapeDevice <> nil then
   begin
-    wp_cursor_shape_device_v1_set_shape(FCursorShapeDevice, FPointerSerial, CursorShape(FCursor));
+    wp_cursor_shape_device_v1_set_shape(FCursorShapeDevice, FPointerSerial, CursorShape(Cursor));
     Exit;
   end;
   if not LoadCursorTheme then
     Exit;
   C := nil;
-  for N in CursorNames(FCursor) do
+  for N in CursorNames(Cursor) do
   begin
     C := wl_cursor_theme_get_cursor(FCursorTheme, PAnsiChar(UTF8String(N)));
     if C <> nil then
       Break;
   end;
-  if (C = nil) and (FCursor <> crDefault) then
+  if (C = nil) and (Cursor <> crDefault) then
     C := wl_cursor_theme_get_cursor(FCursorTheme, 'left_ptr');
   if (C = nil) or (C.image_count = 0) then
     Exit;
@@ -2495,7 +3080,8 @@ begin
   if ACursor = FCursor then
     Exit;
   FCursor := ACursor;
-  ApplyCursor;
+  if not FPointerOnDeco then
+    ApplyCursor;
 end;
 
 {$ENDREGION}

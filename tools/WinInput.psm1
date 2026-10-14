@@ -29,6 +29,7 @@ public static class FwInput2 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
@@ -88,6 +89,13 @@ function Test-TopWindow([string] $Title) {
   return $false
 }
 
+# Keeps a window above the others during a test (other programs on the desktop must not take the clicks).
+function Set-TopWindowTopmost($Window, [bool] $Topmost = $true) {
+  $after = if ($Topmost) { [IntPtr](-1) } else { [IntPtr](-2) }
+  [void][FwInput2]::SetWindowPos($Window.Handle, $after, 0, 0, 0, 0, 0x0013)
+  if ($Topmost) { [void][FwInput2]::SetForegroundWindow($Window.Handle) }
+}
+
 function Move-PointerTo($Window, [int] $X, [int] $Y) {
   [void][FwInput2]::SetCursorPos($Window.Left + $X, $Window.Top + $Y)
   Start-Sleep -Milliseconds 120
@@ -142,5 +150,5 @@ function Get-PointerPosition {
 
 function Set-PointerPosition($Point) { [void][FwInput2]::SetCursorPos($Point.X, $Point.Y) }
 
-Export-ModuleMember -Function Find-TopWindow, Test-TopWindow, Close-TopWindow, Move-PointerTo, Invoke-Click, Invoke-Wheel, Send-Key,
+Export-ModuleMember -Function Find-TopWindow, Test-TopWindow, Close-TopWindow, Set-TopWindowTopmost, Move-PointerTo, Invoke-Click, Invoke-Wheel, Send-Key,
   Send-Text, Get-PointerPosition, Set-PointerPosition

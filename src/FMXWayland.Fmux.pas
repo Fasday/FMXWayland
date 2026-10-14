@@ -40,10 +40,20 @@ type
     FCreate: TFmuxCreateStruct;
     FLastDump: Int64;
     FDumpIndex: Integer;
+    FTitleKey: string;
+    FTitlePixels: TArray<Cardinal>;
+    FTitleWidth: Integer;
+    FTitleHeight: Integer;
     function Form: TCommonCustomForm;
+    function WindowRect: TRectF;
+    procedure SetWindowRect(const ARect: TRectF);
     procedure ReportBounds;
     procedure DumpFrame(const AFrame: PWlFrame);
+    procedure RenderTitle(const AWidth, AHeight: Integer; const ATitle: string; const AActive: Boolean;
+      const AScale: Single);
   protected
+    procedure DoDrawTitle(const AFrame: PWlFrame; const ARect: TRect; const ATitle: string; const AActive: Boolean);
+      override;
     procedure DoPaint(const AFrame: PWlFrame; const ADirty: TRectF); override;
     procedure DoResized; override;
     procedure DoMoved; override;
@@ -130,10 +140,119 @@ begin
   Result := TCommonCustomForm(FCreate.Data);
 end;
 
+function TFmuxWindow.WindowRect: TRectF;
+var
+  Ins: TRect;
+begin
+  // FMX's window rectangle includes the frame (client-side decorations); the origin is the client area's.
+  Ins := DecorationInsets;
+  Result := RectF(Origin.X - Ins.Left, Origin.Y - Ins.Top, Origin.X + Width + Ins.Right,
+    Origin.Y + Height + Ins.Bottom);
+end;
+
+procedure TFmuxWindow.SetWindowRect(const ARect: TRectF);
+var
+  Ins: TRect;
+begin
+  Ins := DecorationInsets;
+  SetBounds(ARect.Left + Ins.Left, ARect.Top + Ins.Top, Round(ARect.Width) - Ins.Left - Ins.Right,
+    Round(ARect.Height) - Ins.Top - Ins.Bottom);
+end;
+
 procedure TFmuxWindow.ReportBounds;
 begin
   if Assigned(FCreate.BoundsChanged) then
-    FCreate.BoundsChanged(FCreate.Data, RectF(Origin.X, Origin.Y, Origin.X + Width, Origin.Y + Height));
+    FCreate.BoundsChanged(FCreate.Data, WindowRect);
+end;
+
+procedure TFmuxWindow.RenderTitle(const AWidth, AHeight: Integer; const ATitle: string; const AActive: Boolean;
+  const AScale: Single);
+var
+  B: TBitmap;
+  Data: TBitmapData;
+  Y: Integer;
+begin
+  FTitleWidth := 0;
+  FTitleHeight := 0;
+  FTitlePixels := nil;
+  B := TBitmap.Create(AWidth, AHeight);
+  try
+    B.Clear(0);
+    if B.Canvas.BeginScene then
+      try
+        if AActive then
+          B.Canvas.Fill.Color := $FF2E3436
+        else
+          B.Canvas.Fill.Color := $FF8A8F8F;
+        B.Canvas.Font.Size := 13 * AScale;
+        B.Canvas.Font.Style := [TFontStyle.fsBold];
+        B.Canvas.FillText(RectF(0, 0, AWidth, AHeight), ATitle, False, 1, [], TTextAlign.Center,
+          TTextAlign.Center);
+      finally
+        B.Canvas.EndScene;
+      end;
+    if B.Map(TMapAccess.Read, Data) then
+      try
+        if Data.PixelFormat <> TPixelFormat.BGRA then
+          Exit;
+        SetLength(FTitlePixels, AWidth * AHeight);
+        for Y := 0 to AHeight - 1 do
+          Move(Data.GetScanline(Y)^, FTitlePixels[Y * AWidth], AWidth * 4);
+        FTitleWidth := AWidth;
+        FTitleHeight := AHeight;
+      finally
+        B.Unmap(Data);
+      end;
+  finally
+    B.Free;
+  end;
+end;
+
+procedure TFmuxWindow.DoDrawTitle(const AFrame: PWlFrame; const ARect: TRect; const ATitle: string;
+  const AActive: Boolean);
+var
+  Key: string;
+  X, Y: Integer;
+  Src, Dst: PCardinal;
+  A: Cardinal;
+begin
+  if (ARect.Width <= 0) or (ARect.Height <= 0) or (ATitle = '') then
+    Exit;
+  Key := Format('%s|%d|%d|%d|%.2f', [ATitle, ARect.Width, ARect.Height, Ord(AActive), AFrame.Scale]);
+  if Key <> FTitleKey then
+  begin
+    FTitleKey := Key;
+    try
+      RenderTitle(ARect.Width, ARect.Height, ATitle, AActive, AFrame.Scale);
+    except
+      on E: Exception do
+      begin
+        FTitlePixels := nil;
+        WlLogOnce('title', 'cannot draw window titles: ' + E.Message);
+      end;
+    end;
+  end;
+  if FTitlePixels = nil then
+    Exit;
+  // Source-over of the premultiplied title onto the (opaque) title bar.
+  for Y := 0 to FTitleHeight - 1 do
+  begin
+    if (ARect.Top + Y < 0) or (ARect.Top + Y >= AFrame.Height) then
+      Continue;
+    Src := @FTitlePixels[Y * FTitleWidth];
+    Dst := PCardinal(PByte(AFrame.Bits) + NativeInt(ARect.Top + Y) * AFrame.Stride + ARect.Left * 4);
+    for X := 0 to FTitleWidth - 1 do
+    begin
+      A := Src^ shr 24;
+      if A = 255 then
+        Dst^ := Src^
+      else if A > 0 then
+        Dst^ := Src^ + (((((Dst^ and $00FF00FF) * (255 - A)) shr 8) and $00FF00FF) or
+          ((((Dst^ shr 8) and $00FF00FF) * (255 - A)) and $FF00FF00));
+      Inc(Src);
+      Inc(Dst);
+    end;
+  end;
 end;
 
 procedure TFmuxWindow.DoPaint(const AFrame: PWlFrame; const ADirty: TRectF);
@@ -490,9 +609,11 @@ begin
   W.FCreate := CreateStruct;
   W.FCreate.Title := nil;
   W.Borderless := CreateStruct.BorderStyle = TFmuxBorderStyle.None;
+  W.PrepareDecorations;
   if CreateStruct.Title <> nil then
     W.SetTitle(CreateStruct.Title);
-  W.SetBounds(CreateStruct.X, CreateStruct.Y, Round(CreateStruct.Width), Round(CreateStruct.Height));
+  W.SetWindowRect(RectF(CreateStruct.X, CreateStruct.Y, CreateStruct.X + CreateStruct.Width,
+    CreateStruct.Y + CreateStruct.Height));
   WlLog(TWlLogLevel.Debug, 'CreateWindow %p "%s" popup %s %.0f,%.0f %.0fx%.0f', [Pointer(W), W.Title,
     BoolToStr(CreateStruct.Popup, True), CreateStruct.X, CreateStruct.Y, CreateStruct.Width, CreateStruct.Height]);
   Result := W;
@@ -637,7 +758,7 @@ var
 begin
   W := Win(Wnd);
   if W <> nil then
-    R := RectF(W.Origin.X, W.Origin.Y, W.Origin.X + W.Width, W.Origin.Y + W.Height)
+    R := W.WindowRect
   else
     R := TRectF.Empty;
 end;
@@ -647,7 +768,7 @@ begin
   if Wnd = nil then
     Exit;
   WlLog(TWlLogLevel.Debug, 'SetWindowRect %p %.0f,%.0f %.0fx%.0f', [Wnd, R.Left, R.Top, R.Width, R.Height]);
-  Win(Wnd).SetBounds(R.Left, R.Top, Round(R.Width), Round(R.Height));
+  Win(Wnd).SetWindowRect(R);
 end;
 
 procedure WlInvalidateRect(Wnd: Pointer; R: TRectF); cdecl;

@@ -51,9 +51,21 @@ function Check([string] $Name, [bool] $Ok, [string] $Detail = '') {
   Write-Host "$s  $Name $Detail"
 }
 function Shot([string] $Name, [string] $Title = 'FMXWayland Hello', [int] $ExtendBottom = 0) {
-  & $capture -Title $Title -Out (Join-Path $shots "$Name.png") -TimeoutSec 5 -ExtendBottom $ExtendBottom | Out-Null
+  # With the client-side decorations (title bar 30, borders 4).
+  & $capture -Title $Title -Out (Join-Path $shots "$Name.png") -TimeoutSec 5 -ExtendLeft 4 -ExtendTop 30 `
+    -ExtendRight 4 -ExtendBottom ($ExtendBottom + 4) | Out-Null
 }
 function LogText { if (Test-Path $logFile) { Get-Content $logFile -Raw -Encoding UTF8 } else { '' } }
+function CountLog([string] $Pattern) { ([regex]::Matches((LogText), $Pattern)).Count }
+# Waits until the log has more matches of Pattern than ABefore.
+function WaitMore([string] $Pattern, [int] $ABefore, [int] $TimeoutMs = 5000) {
+  $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+  while ((Get-Date) -lt $deadline) {
+    if ((CountLog $Pattern) -gt $ABefore) { return $true }
+    Start-Sleep -Milliseconds 100
+  }
+  return $false
+}
 function WaitLog([string] $Pattern, [int] $TimeoutMs = 3000) {
   $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
   while ((Get-Date) -lt $deadline) {
@@ -69,6 +81,7 @@ try {
   $w = Find-TopWindow 'FMXWayland Hello' 30
   if (-not $w) { throw 'The Hello window did not appear' }
   Check 'window appears' $true "($($w.Width)x$($w.Height) at $($w.Left),$($w.Top))"
+  Set-TopWindowTopmost $w
   Start-Sleep -Milliseconds 1500
   Shot '01-start'
 
@@ -134,7 +147,9 @@ try {
   Invoke-Wheel -1
   Check 'mouse wheel' (WaitLog 'wheel 240') ''
 
-  # Combo box: the drop-down list is an xdg_popup.
+  # Combo box: the drop-down list is an xdg_popup (a separate window for WSLg: the main one must not be topmost).
+  Set-TopWindowTopmost $w $false
+  [void](Find-TopWindow 'FMXWayland Hello' 1)
   Invoke-Click $w 120 303
   Start-Sleep -Milliseconds 1200
   Shot '05-combo-open' -ExtendBottom 200
@@ -143,6 +158,7 @@ try {
   Start-Sleep -Milliseconds 800
   Check 'combo box popup: choose an item' (WaitLog 'combo (Green|Blue|Yellow|Purple)') ''
   Shot '06-combo-chosen'
+  Set-TopWindowTopmost $w
 
   # Check box.
   Invoke-Click $w 250 303
@@ -153,6 +169,7 @@ try {
   $w2 = Find-TopWindow 'Second form 1' 10
   Check 'second form appears' ($null -ne $w2) ''
   if ($w2) {
+    Set-TopWindowTopmost $w2
     Start-Sleep -Milliseconds 1000
     Shot '07-second-form' 'Second form 1'
     Invoke-Click $w2 80 95
@@ -164,6 +181,7 @@ try {
   $w3 = Find-TopWindow 'Modal form' 10
   Check 'modal form appears' ($null -ne $w3) ''
   if ($w3) {
+    Set-TopWindowTopmost $w3
     Start-Sleep -Milliseconds 1000
     Shot '08-modal' 'Modal form'
     # The main window does not react while the modal form is up.
@@ -179,6 +197,7 @@ try {
   $w4 = Find-TopWindow 'Second form 2' 10
   Check 'another second form appears' ($null -ne $w4) ''
   if ($w4) {
+    Set-TopWindowTopmost $w4
     Start-Sleep -Milliseconds 800
     Close-TopWindow $w4
     Check 'close request from the compositor closes the form' (WaitLog 'second form closed[\s\S]*second form closed') ''
@@ -186,15 +205,43 @@ try {
     Check 'its window is gone' (-not (Test-TopWindow 'Second form 2')) ''
   }
 
+  # Client-side decorations (WSLg has no server-side ones): the close button of a third second form.
+  Invoke-Click $w 85 403
+  $w5 = Find-TopWindow 'Second form 3' 10
+  if ($w5) {
+    Set-TopWindowTopmost $w5
+    Start-Sleep -Milliseconds 800
+    Shot '09-csd-second-form' 'Second form 3'
+    # WSLg reports the window's own surface as the Windows window; the title bar lies above it.
+    Invoke-Click $w5 ($w5.Width - 20) -14
+    Check 'close button of the client-side title bar' (WaitLog 'second form closed[\s\S]*second form closed[\s\S]*second form closed') ''
+  } else {
+    Check 'third second form appears' $false ''
+  }
+
+  # Maximize from the title bar's button, restore from the sample's button.
+  $n = CountLog 'resize \d+x\d+ state 2'
+  Invoke-Click $w ($w.Width - 60) -14
+  Check 'title bar maximize button' (WaitMore 'resize \d+x\d+ state 2' $n) ''
+  Start-Sleep -Milliseconds 1000
+  $wm = Find-TopWindow 'FMXWayland Hello' 5
+  $n = CountLog 'resize 700x540 state 0'
+  Invoke-Click $wm 365 403
+  Check 'restore after the title bar maximize' (WaitMore 'resize 700x540 state 0' $n) ''
+  Start-Sleep -Milliseconds 1000
+  $w = Find-TopWindow 'FMXWayland Hello' 5
+
   # Maximize (xdg_toplevel.set_maximized -> configure with the new size -> FMX resize) and back.
+  $n = CountLog 'resize \d+x\d+ state 2'
   Invoke-Click $w 365 403
-  Check 'maximize: the compositor resizes the window' (WaitLog 'resize \d+x\d+ state 2' 5000) ''
+  Check 'maximize: the compositor resizes the window' (WaitMore 'resize \d+x\d+ state 2' $n) ''
   Start-Sleep -Milliseconds 1000
   $wm = Find-TopWindow 'FMXWayland Hello' 5
   Check 'maximized window is larger' ($wm.Width -gt 1000) "($($wm.Width)x$($wm.Height))"
   Shot '09-maximized'
+  $n = CountLog 'resize 700x540 state 0'
   Invoke-Click $wm 365 403
-  Check 'restore: back to 700x540' (WaitLog 'resize 700x540 state 0' 5000) ''
+  Check 'restore: back to 700x540' (WaitMore 'resize 700x540 state 0' $n) ''
   Start-Sleep -Milliseconds 1000
   $w = Find-TopWindow 'FMXWayland Hello' 5
 
