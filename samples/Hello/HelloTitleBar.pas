@@ -231,6 +231,8 @@ begin
   FCloseButton := AddButton('M0,0 L10,10 M10,0 L0,10', CloseClick, Glyph);
   FMaxButton := AddButton('M0,0 L10,0 L10,10 L0,10 Z', MaximizeClick, FMaxGlyph);
   FMinButton := AddButton('M0,6 L10,6', MinimizeClick, Glyph);
+  // A line alone has no height to stretch: drawn as it is, in the middle of the 10 x 10 box.
+  Glyph.WrapMode := TPathWrapMode.Original;
   FTitle := TLabel.Create(Self);
   FTitle.Parent := FCaption;
   FTitle.Align := TAlignLayout.Client;
@@ -377,8 +379,8 @@ begin
   APath.Width := 10;
   APath.Height := 10;
   APath.HitTest := False;
-  // The glyphs are drawn in a 10 x 10 box.
-  APath.WrapMode := TPathWrapMode.Original;
+  // The glyphs span a 10 x 10 box.
+  APath.WrapMode := TPathWrapMode.Stretch;
   APath.Fill.Kind := TBrushKind.None;
   APath.Stroke.Color := TAlphaColors.White;
   APath.Stroke.Thickness := 1.2;
@@ -605,37 +607,37 @@ begin
         FCombo.DropDown;
         Log(Format('selftest: drop-down open %s', [BoolToStr(FCombo.DroppedDown, True)]));
       end;
-    4:
+    6:
       begin
         FCombo.DropDown;
         Log(Format('selftest: drop-down closed %s', [BoolToStr(not FCombo.DroppedDown, True)]));
       end;
-    5:
+    7:
       if FCaps and FmxwCapMaximize <> 0 then
         FFrame.SetMaximized(Handle, True)
       else
         Log('selftest: no maximize capability');
-    6:
+    8:
       if FCaps and FmxwCapMaximize <> 0 then
       begin
         Log(Format('selftest: maximized %s %s', [BoolToStr(FStates and FmxwStateMaximized <> 0, True), SizeText]));
         FFrame.SetMaximized(Handle, False);
       end;
-    7:
+    9:
       Log(Format('selftest: restored %s %s', [BoolToStr(FStates and FmxwStateMaximized = 0, True), SizeText]));
-    8:
+    10:
       begin
         FFrame.SetDecorated(Handle, True);
         Log(Format('selftest: decorations on: decorated %s, client %s', [BoolToStr(FFrame.GetDecorated(Handle),
           True), SizeText]));
       end;
-    10:
+    12:
       begin
         FFrame.SetDecorated(Handle, False);
         Log(Format('selftest: decorations off: decorated %s, client %s', [BoolToStr(FFrame.GetDecorated(Handle),
           True), SizeText]));
       end;
-    12:
+    14:
       begin
         FSelfTimer.Enabled := False;
         Log('selftest: done');

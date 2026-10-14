@@ -761,6 +761,11 @@ procedure THelloForm.QuitTimerTimer(Sender: TObject);
 begin
   FQuitTimer.Enabled := False;
   Log('quit timer: closing');
+  // FMX frees a form's children after its handle: a combo box whose drop-down is still open then asks the gone
+  // window for its client size (TCustomForm.DoRemoveObject), an access violation on Linux. The title
+  // bar's close button closes the popups first (FmuxClose); this timer has to do it itself.
+  if FCombo.DroppedDown then
+    FCombo.DropDown;
   Close;
 end;
 

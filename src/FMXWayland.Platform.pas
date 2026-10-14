@@ -437,6 +437,9 @@ type
     FPressSerial: UInt32;
     FPressWindow: TWlWindow;
     FPressButtons: Integer;
+    // A move asked for (TWlWindow.BeginMove) that starts once the pointer is dragged from where it was then.
+    FMoveWindow: TWlWindow;
+    FMoveFrom: TPointF;
     FCursor: Integer;
     FCursorTheme: Pwl_cursor_theme;
     FCursorThemeScale: Integer;
@@ -481,6 +484,7 @@ type
     procedure StopKeyRepeat;
     procedure DeliverKeyDown(const AKey: UInt32);
     procedure FlushAxis;
+    procedure StartMove;
     procedure ReleaseXkb;
     function ReadOffer(const AOffer: TWlDataOffer; const AMimeType: string; out AData: TBytes): Boolean;
   public
@@ -978,6 +982,8 @@ const
   // Double-click: the second press of the same button within this time and distance.
   CDoubleClickMs = 400;
   CDoubleClickDistance = 4;
+  // A move asked for at a press starts when the pointer has gone this far (logical pixels) with the button held.
+  CDragThreshold = 4;
 
 procedure PointerEnter(AData: Pointer; AWlPointer: Pwl_pointer; ASerial: UInt32; ASurface: Pwl_surface;
   ASurfaceX, ASurfaceY: Twl_fixed); cdecl;
@@ -1017,6 +1023,7 @@ begin
   // A press the compositor took over (an interactive move or resize, its window menu) ends here for the window.
   D.FPressButtons := 0;
   D.FPressWindow := nil;
+  D.FMoveWindow := nil;
   if W = nil then
     Exit;
   if D.FPointerOnDeco then
@@ -1041,6 +1048,12 @@ var
 begin
   D := TWlDisplay(AData);
   D.FPointerPos := PointF(wl_fixed_to_double(ASurfaceX), wl_fixed_to_double(ASurfaceY));
+  if D.FPointerWindow = nil then
+    Exit;
+  if (D.FMoveWindow <> nil) and (D.FMoveWindow = D.FPointerWindow) and
+    ((Abs(D.FPointerPos.X - D.FMoveFrom.X) >= CDragThreshold) or
+    (Abs(D.FPointerPos.Y - D.FMoveFrom.Y) >= CDragThreshold)) then
+    D.StartMove;
   if D.FPointerWindow = nil then
     Exit;
   if D.FPointerOnDeco then
@@ -1074,12 +1087,15 @@ begin
     D.FPressButtons := D.FPressButtons or Bit;
     D.FPressSerial := ASerial;
     D.FPressWindow := W;
+    D.FMoveWindow := nil;
   end
   else
   begin
     D.FPressButtons := D.FPressButtons and not Bit;
     if D.FPressButtons = 0 then
       D.FPressWindow := nil;
+    // Released without a drag: a click, no move.
+    D.FMoveWindow := nil;
   end;
   if WlLogEnabled(TWlLogLevel.Trace) then
     WlLog(TWlLogLevel.Trace, 'button %x state %d time %u at %.1f,%.1f (last press %u)', [AButton, AState, ATime,
@@ -1632,9 +1648,10 @@ begin
     FDecoration := zxdg_decoration_manager_v1_get_toplevel_decoration(FDisplay.FDecorationManager, FToplevel);
     zxdg_toplevel_decoration_v1_add_listener(FDecoration, @CDecorationListener, Self);
     if FBorderless or not FDecorated then
-      zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)
+      FDecoMode := ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
     else
-      zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+      FDecoMode := ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+    zxdg_toplevel_decoration_v1_set_mode(FDecoration, FDecoMode);
   end;
 end;
 
@@ -1731,10 +1748,12 @@ begin
     // DecorationConfigure enables the window's own then), else the window's own.
     if FDecoration <> nil then
     begin
+      // The mode asked for counts until the compositor answers (DecorationConfigure).
       if FBorderless then
-        zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)
+        FDecoMode := ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
       else
-        zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+        FDecoMode := ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+      zxdg_toplevel_decoration_v1_set_mode(FDecoration, FDecoMode);
     end
     else if not FBorderless and DecoEnvAllowed and ((FDisplay.FDecorationManager = nil) or
       (FDecoMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)) then
@@ -1744,7 +1763,10 @@ begin
   begin
     DisableCsd;
     if FDecoration <> nil then
-      zxdg_toplevel_decoration_v1_set_mode(FDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    begin
+      FDecoMode := ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+      zxdg_toplevel_decoration_v1_set_mode(FDecoration, FDecoMode);
+    end;
     // The window geometry is the surface from now on (also where it was never set: server-side decorations).
     FGeometryW := -1;
   end;
@@ -1800,11 +1822,14 @@ function TWlWindow.BeginMove: Boolean;
 var
   Serial: UInt32;
 begin
+  // As GTK does: the move starts when the pointer is dragged while the button is held (TWlDisplay.DragMove), so a
+  // click - also each click of a double click - stays the window's. (A compositor taking the pointer at the press
+  // lets the release go, and GNOME Shell moves a maximized window it got that way to the top left on restore.)
   Result := (FToplevel <> nil) and FVisible and HeldPress(Serial);
   if Result then
   begin
-    xdg_toplevel_move(FToplevel, FDisplay.FSeat, Serial);
-    FDisplay.Flush;
+    FDisplay.FMoveWindow := Self;
+    FDisplay.FMoveFrom := FDisplay.FPointerPos;
   end;
   WlLog(TWlLogLevel.Debug, 'move of "%s" asked: %s', [FTitle, BoolToStr(Result, True)]);
 end;
@@ -2199,7 +2224,9 @@ begin
           else
           begin
             FDecoLastClick := Now;
-            xdg_toplevel_move(FToplevel, FDisplay.FSeat, ASerial);
+            // The move starts when the pointer is dragged (TWlDisplay.StartMove): a click stays a click.
+            FDisplay.FMoveWindow := Self;
+            FDisplay.FMoveFrom := PointF(AX, AY);
           end;
         end
         else if Part in CButtons then
@@ -3302,6 +3329,8 @@ begin
     FLastClickWindow := nil;
   if FPressWindow = AWindow then
     FPressWindow := nil;
+  if FMoveWindow = AWindow then
+    FMoveWindow := nil;
 end;
 
 function TWlDisplay.PrimaryOutput: TWlOutput;
@@ -3338,6 +3367,19 @@ begin
     Result := FLastInputWindow.ClientToScreen(FPointerPos)
   else
     Result := FPointerPos;
+end;
+
+procedure TWlDisplay.StartMove;
+var
+  W: TWlWindow;
+begin
+  W := FMoveWindow;
+  FMoveWindow := nil;
+  if (W = nil) or (W.FToplevel = nil) or (FPressWindow <> W) or (FPressButtons = 0) or (FSeat = nil) then
+    Exit;
+  WlLog(TWlLogLevel.Debug, 'move of "%s" starts (dragged)', [W.FTitle]);
+  xdg_toplevel_move(W.FToplevel, FSeat, FPressSerial);
+  Flush;
 end;
 
 procedure TWlDisplay.FlushAxis;

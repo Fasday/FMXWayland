@@ -35,7 +35,9 @@ param(
     'kwin:2', 'kwin:1.5', 'kwin-virtual:1', 'gnome:1', 'gnome:2', 'gnome:1.5'),
   [string] $BuildRoot = 'D:\Work\FMXWayland-build',
   [string] $Distro = 'Ubuntu-26.04',
-  [string] $Config = 'Release'
+  [string] $Config = 'Release',
+  # Parts of tests\compositors.sh: selftest, frame-selftest, early, scenario, frame.
+  [string[]] $Parts = @('selftest', 'frame-selftest', 'early', 'scenario', 'frame')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +47,55 @@ $exe = Join-Path $BuildRoot "bin\Linux64\$Config\Hello"
 if (-not (Test-Path $exe)) { throw "No $exe (build it first: tools\build.ps1 -Project samples\Hello\Hello.dpr)" }
 $root = Join-Path $BuildRoot 'shots\compositors'
 New-Item -ItemType Directory -Force -Path $root | Out-Null
+# The desktop's sans-serif family as fontconfig resolves it: FMX's default font (IFMXSystemFontService).
+$family = "$(wsl -d $Distro -u root -- timeout 30 fc-match -f '%{family[0]}' sans-serif)".Trim()
+
+# PASS/FAIL lines of a dictionary of checks.
+function Get-ResultLines($Checks) {
+  foreach ($k in $Checks.Keys) { if ($Checks[$k]) { "PASS  $k" } else { "FAIL  $k" } }
+}
+
+# Hello --own-titlebar --selftest (IFMXWaylandWindowFrame without input): its log and the screenshot taken while the
+# undecorated window had its drop-down open.
+function Get-FrameSelfTestLines([string] $Out, [string] $Label, [string] $Comp) {
+  $log = "$(Get-Content (Join-Path $Out 'frame-selftest.log') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)"
+  $p = "$($Label): own title bar self-test"
+  $checks = [ordered]@{
+    "$($p): service found" = $log -match 'frame: service found'
+    "$($p): decorations off" = $log -match 'frame: decorated False'
+    "$($p): listener told at once and after the configure" =
+      ($log -match 'frame: states \$0 \(-\) capabilities \$FFFFFFFF \(unknown\)') -and
+      ($log -match 'frame: states \$[0-9A-F]+ \([^)]*\) capabilities \$[0-9A-F]+ \((?!unknown)')
+    "$($p): BeginMove, BeginResize, ShowWindowMenu False without a press" =
+      $log -match 'selftest: without a press: BeginMove False, BeginResize False, ShowWindowMenu False'
+    "$($p): drop-down (xdg_popup of an undecorated window) placed where asked" =
+      ($log -match 'selftest: drop-down open True') -and
+      ($log -match 'popup configure (-?\d+),(-?\d+) \d+x\d+ \(asked \1,\2 ')
+    "$($p): SetMaximized True: maximized state" =
+      $log -match 'frame: states \$[0-9A-F]+ \([^)]*maximized[\s\S]*selftest: maximized True'
+    "$($p): SetMaximized False: restored 640x420" = $log -match 'selftest: restored True 640x420'
+    "$($p): SetDecorated True: decorations back" = $log -match 'selftest: decorations on: decorated True'
+    # sway and KWin keep the outer size of a window whose decoration mode changes: its client area stays smaller by
+    # their title bar once that came and went.
+    "$($p): SetDecorated False again" = $log -match ('selftest: decorations off: decorated False, client ' +
+      $(if ($Comp -in 'sway', 'kwin', 'kwin-virtual') { '\d+x\d+' } else { '640x420' }))
+    "$($p): self-test done, clean exit" = ($log -match 'selftest: done') -and ($log -match 'exit=0')
+    "$($p): no protocol errors" = $log -notmatch 'protocol error|FMXWayland: error'
+  }
+  $noMax = $log -match 'selftest: no maximize capability'
+  foreach ($k in $checks.Keys) {
+    if ($noMax -and ($k -match 'SetMaximized')) { "SKIP  $k (no maximize in the window manager's capabilities)" }
+    elseif ($checks[$k]) { "PASS  $k" } else { "FAIL  $k" }
+  }
+  if ($Comp -ne 'kwin-virtual') {
+    $shot = Join-Path $Out 'frame-selftest-dropdown.png'
+    $ok, $detail = Test-HelloOwnTitleBarShot $shot
+    $r = if ($ok) { 'PASS' } else { 'FAIL' }
+    "$r  $($p): screenshot: the program's caption, no FMXWayland title bar ($detail)"
+    $item = Get-ColorCount $shot 0x7EB0E6 6
+    "$(if ($item -gt 1500) { 'PASS' } else { 'FAIL' })  $($p): screenshot: the drop-down ($item highlight pixels)"
+  }
+}
 $all = [ordered]@{}
 $columns = @()
 foreach ($run in $Runs) {
@@ -55,31 +106,51 @@ foreach ($run in $Runs) {
   Write-Host "== $label"
   # Native stderr redirected: error records that must not stop the script.
   $ErrorActionPreference = 'Continue'
-  wsl -d $Distro -u root --exec timeout 700 bash (ConvertTo-WslPath (Join-Path $PSScriptRoot 'compositors.sh')) $comp `
-    $scale (ConvertTo-WslPath $out) (ConvertTo-WslPath $exe) 2>&1 | Out-Null
+  wsl -d $Distro -u root --exec timeout 1100 bash (ConvertTo-WslPath (Join-Path $PSScriptRoot 'compositors.sh')) `
+    $comp $scale (ConvertTo-WslPath $out) (ConvertTo-WslPath $exe) ($Parts -join ' ') 2>&1 | Out-Null
   $ErrorActionPreference = 'Stop'
   $lines = @(Get-Content (Join-Path $out 'results.txt') -Encoding UTF8 -ErrorAction SilentlyContinue)
-  # The self-test, checked as tests\weston-headless.ps1 does.
-  $log = "$(Get-Content (Join-Path $out 'selftest.log') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)"
-  # Sway keeps the outer size (700x540) of a window it switches to client-side decorations: the client area is
-  # smaller by the program's title bar and borders.
-  $cw, $ch = if ($comp -eq 'sway-csd') { 692, 506 } else { 700, 540 }
-  $self = Get-HelloSelfTestChecks $log "$($label): self-test" ([double]::Parse($scale,
-    [Globalization.CultureInfo]::InvariantCulture)) $cw $ch
-  $noMax = ($log -match 'wm capabilities of "FMXWayland Hello":(.*)') -and ($Matches[1] -notmatch 'maximize')
-  $selfLines = foreach ($k in $self.Keys) {
-    if ($noMax -and ($k -match 'maximize|restore')) { "SKIP  $k (no maximize in the window manager's capabilities)" }
-    elseif ($self[$k]) { "PASS  $k" } else { "FAIL  $k" }
+  $selfLines = @()
+  if ($Parts -contains 'selftest') {
+    # The self-test, checked as tests\weston-headless.ps1 does.
+    $log = "$(Get-Content (Join-Path $out 'selftest.log') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)"
+    # Sway keeps the outer size (700x540) of a window it switches to client-side decorations: the client area is
+    # smaller by the program's title bar and borders.
+    $cw, $ch = if ($comp -eq 'sway-csd') { 692, 506 } else { 700, 540 }
+    $self = Get-HelloSelfTestChecks $log "$($label): self-test" ([double]::Parse($scale,
+      [Globalization.CultureInfo]::InvariantCulture)) $cw $ch
+    $noMax = ($log -match 'wm capabilities of "FMXWayland Hello":(.*)') -and ($Matches[1] -notmatch 'maximize')
+    $selfLines = foreach ($k in $self.Keys) {
+      if ($noMax -and ($k -match 'maximize|restore')) { "SKIP  $k (no maximize in the window manager's capabilities)" }
+      elseif ($self[$k]) { "PASS  $k" } else { "FAIL  $k" }
+    }
+    $frames = Join-Path $out 'selftest-frames'
+    $size = Convert-HelloFrameDump $frames
+    $bw = [int][Math]::Round($cw * [double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture))
+    $bh = [int][Math]::Round($ch * [double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture))
+    $selfLines += if (($null -ne $size) -and ($size.Width -eq $bw) -and ($size.Height -eq $bh)) {
+      "PASS  $($label): self-test: frame dump ${bw}x${bh}"
+    } else { "FAIL  $($label): self-test: frame dump ${bw}x${bh}" }
+    if ($comp -ne 'kwin-virtual') {
+      $selfLines += if (Test-Path (Join-Path $out 'selftest-dropdown.png')) {
+        "PASS  $($label): self-test: compositor screenshot"
+      } else { "FAIL  $($label): self-test: compositor screenshot" }
+    }
+    $selfLines += Get-ResultLines (Get-HelloFontChecks $log "$($label): self-test: font" $family)
   }
-  $frames = Join-Path $out 'selftest-frames'
-  $size = Convert-HelloFrameDump $frames
-  $bw = [int][Math]::Round($cw * [double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture))
-  $bh = [int][Math]::Round($ch * [double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture))
-  $selfLines += if (($null -ne $size) -and ($size.Width -eq $bw) -and ($size.Height -eq $bh)) {
-    "PASS  $($label): self-test: frame dump ${bw}x${bh}" } else { "FAIL  $($label): self-test: frame dump ${bw}x${bh}" }
-  if ($comp -ne 'kwin-virtual') {
-    $selfLines += if (Test-Path (Join-Path $out 'selftest-dropdown.png')) {
-      "PASS  $($label): self-test: compositor screenshot" } else { "FAIL  $($label): self-test: compositor screenshot" }
+  if ($Parts -contains 'frame-selftest') { $selfLines += Get-FrameSelfTestLines $out $label $comp }
+  if (($Parts -contains 'early') -and ($comp -ne 'kwin-virtual')) {
+    foreach ($v in 'early-popup', 'early-popup=paint', 'early-popup=create') {
+      $n = $v -replace '=', '-'
+      $elog = "$(Get-Content (Join-Path $out "$n.log") -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)"
+      $selfLines += Get-ResultLines (Get-HelloEarlyPopupChecks $elog (Join-Path $out "$n.png") "$($label): --$v" `
+        -Activates)
+    }
+  }
+  if (($Parts -contains 'frame') -and (Test-Path (Join-Path $out 'frame-01-start.png'))) {
+    $ok, $detail = Test-HelloOwnTitleBarShot (Join-Path $out 'frame-01-start.png')
+    $selfLines += "$(if ($ok) { 'PASS' } else { 'FAIL' })  $($label): own title bar: screenshot: no FMXWayland " +
+      "title bar ($detail)"
   }
   $lines = @($selfLines) + $lines
   $lines | Set-Content (Join-Path $out 'results-all.txt') -Encoding UTF8
