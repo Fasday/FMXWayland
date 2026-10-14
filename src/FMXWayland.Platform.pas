@@ -70,7 +70,8 @@ type
 
   /// <summary>The pixels of a frame being painted (handed to the canvas as its context): a wl_shm buffer of the
   /// window, premultiplied BGRA, Width x Height buffer pixels = logical size x Scale. The buffer may hold an older
-  /// frame (buffers rotate): whoever draws must draw all of it (the Skia raster canvas copies its whole back buffer).
+  /// frame (buffers rotate): whoever draws must draw all of it (the Skia raster canvas copies its whole back buffer;
+  /// FMX's cairo canvas paints into a retained frame and copies what changed since the frame the buffer holds).
   /// Bits is nil under external presentation.</summary>
   TWlFrame = record
     Bits: Pointer;
@@ -241,7 +242,7 @@ type
     /// <summary>The window's scale changed.</summary>
     procedure DoScaleChanged; virtual;
     /// <summary>Draws the title of client-side decorations into ARect (buffer pixels) of AFrame (premultiplied BGRA);
-    /// the core has no text renderer, the FMX layer draws it with a Skia bitmap.</summary>
+    /// the core has no text renderer, the FMX layer draws it with an FMX bitmap (of the canvas FMX uses).</summary>
     procedure DoDrawTitle(const AFrame: PWlFrame; const ARect: TRect; const ATitle: string; const AActive: Boolean);
       virtual;
   public

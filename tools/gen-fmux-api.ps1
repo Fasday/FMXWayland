@@ -15,8 +15,8 @@
     implemented ones. The helper routines declared in the interface (FmuxStateToShiftState, MsgDlgButtonsToButtons, ...)
     come from src\FMXWayland.FmuxApi.inc. No libfmux resource and no dlopen of libfmux.
 
-  The script prints how many of the function pointers FMXWayland.Fmux implements (the assignments
-  "FMUX.Api.<Name> := ..." in src\FMXWayland.Fmux.pas) and, with -StatusFile, writes the list as Markdown.
+  The script prints how many of the function pointers FMXWayland implements (the assignments "FMUX.Api.<Name> := ..."
+  in src\FMXWayland.Fmux.pas and src\FMXWayland.Cairo.pas) and, with -StatusFile, writes the list as Markdown.
 
 .EXAMPLE
   .\tools\gen-fmux-api.ps1
@@ -73,16 +73,16 @@ foreach ($m in $rx.Matches($interfaceText)) {
 }
 if ($pointers.Count -lt 100) { throw "Found only $($pointers.Count) function pointers in $Source (format changed?)" }
 
-# What FMXWayland.Fmux implements.
-$fmuxUnit = Join-Path $Root 'src\FMXWayland.Fmux.pas'
+# What FMXWayland implements: the assignments in FMXWayland.Fmux and FMXWayland.Cairo (FMX's cairo canvas).
 $implemented = @{}
-if (Test-Path $fmuxUnit) {
+foreach ($fmuxUnit in (Join-Path $Root 'src\FMXWayland.Fmux.pas'), (Join-Path $Root 'src\FMXWayland.Cairo.pas')) {
+  if (-not (Test-Path $fmuxUnit)) { continue }
   foreach ($m in [regex]::Matches([IO.File]::ReadAllText($fmuxUnit), '(?m)^\s*FMUX\.Api\.(\w+)\s*:=[^;]*;[ \t]*(?://[ \t]*partial:[ \t]*(?<note>[^\r\n]*))?')) {
     $implemented[$m.Groups[1].Value] = if ($m.Groups['note'].Success) { 'partial: ' + $m.Groups['note'].Value.Trim() } else { 'implemented' }
   }
 }
 $unknown = @($implemented.Keys | Where-Object { $n = $_; -not ($pointers | Where-Object { $_.Name -eq $n }) })
-if ($unknown.Count -gt 0) { throw "FMXWayland.Fmux assigns pointers that this FMUX.Api does not declare: $($unknown -join ', ')" }
+if ($unknown.Count -gt 0) { throw "FMXWayland assigns pointers that this FMUX.Api does not declare: $($unknown -join ', ')" }
 
 $sb = New-Object Text.StringBuilder
 function Add([string] $s = '') { [void]$sb.Append($s).Append("`r`n") }
@@ -139,7 +139,7 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 [IO.File]::WriteAllText($Out, $sb.ToString(), (New-Object Text.UTF8Encoding $true))
 
 $implCount = @($pointers | Where-Object { $implemented.ContainsKey($_.Name) }).Count
-Write-Host "FMUX.Api.pas -> $Out ($($pointers.Count) function pointers, $implCount implemented by FMXWayland.Fmux)"
+Write-Host "FMUX.Api.pas -> $Out ($($pointers.Count) function pointers, $implCount implemented by FMXWayland)"
 
 if ($StatusFile) {
   $st = New-Object Text.StringBuilder
@@ -148,8 +148,8 @@ if ($StatusFile) {
   [void]$st.Append("*partial*: assigned, but only part of it is done (the note says what); *stub*: the generated stub (logs once,`n")
   [void]$st.Append("returns zero/nil/False).`n`n")
   [void]$st.Append("Generated with ``.\tools\gen-fmux-api.ps1 -StatusFile docs\FMUX-STATUS.md`` (the notes come from the`n")
-  [void]$st.Append("``// partial:`` comments in ``src\FMXWayland.Fmux.pas``); a stub that FMX calls logs ``<name> is not implemented```n")
-  [void]$st.Append("once at run time.`n`n")
+  [void]$st.Append("``// partial:`` comments in ``src\FMXWayland.Fmux.pas`` and ``src\FMXWayland.Cairo.pas``); a stub that FMX`n")
+  [void]$st.Append("calls logs ``<name> is not implemented`` once at run time.`n`n")
   [void]$st.Append("| Function | FMXWayland |`n|---|---|`n")
   foreach ($p in $pointers) {
     $s = if ($implemented.ContainsKey($p.Name)) { $implemented[$p.Name] } else { 'stub' }

@@ -31,4 +31,5 @@ is original code under this repository's MIT license.
 ## Run-time libraries (not distributed)
 
 FMXWayland loads at run time, with dlopen, libraries of the user's system: libwayland-client (MIT),
-libwayland-cursor (MIT), libxkbcommon (MIT). Skia (`libsk4d.so`) comes with Delphi.
+libwayland-cursor (MIT), libxkbcommon (MIT); for FMX's default canvas cairo (LGPL-2.1 or MPL-1.1), Pango and
+pangocairo (LGPL-2.1+), gdk-pixbuf (LGPL-2.1+), GObject and GLib (LGPL-2.1+). Skia (`libsk4d.so`) comes with Delphi.

@@ -49,6 +49,7 @@ type
     procedure Log(const AText: string);
     procedure SelfTestStep(Sender: TObject);
     procedure SelfTestModalTimer(Sender: TObject);
+    procedure SelfTestMessageTimer(Sender: TObject);
     function AddLabel(const AX, AY, AWidth: Single; const AText: string): TLabel;
     function AddButton(const AX, AY, AWidth: Single; const AText: string; const AOnClick: TNotifyEvent): TButton;
     procedure ClickButtonClick(Sender: TObject);
@@ -236,7 +237,8 @@ begin
   FResizeButton := AddButton(440, 390, 130, 'Resize 760x560', ResizeButtonClick);
   AddButton(580, 390, 110, 'Message box', MessageButtonClick);
 
-  with AddLabel(20, 440, 660, 'FMXWayland: FMX on Wayland without libfmux and GTK; Skia raster canvas, wl_shm.') do
+  with AddLabel(20, 440, 660, Format('FMXWayland: FMX on Wayland without libfmux and GTK; %s, wl_shm.',
+    [TCanvasManager.DefaultCanvas.ClassName])) do
     TextSettings.FontColor := TAlphaColors.Gray;
 
   FAnimTimer := TTimer.Create(Self);
@@ -263,6 +265,7 @@ begin
   OnActivate := FormActivate;
   OnDeactivate := FormDeactivate;
   Log('created');
+  Log('canvas ' + TCanvasManager.DefaultCanvas.ClassName);
 end;
 
 procedure THelloForm.FormActivate(Sender: TObject);
@@ -540,8 +543,22 @@ begin
   TForm(TComponent(Sender).Owner).ModalResult := mrRetry;
 end;
 
-/// --selftest: steps without user input (threads, clipboard, popup, second form, maximize, modal loop); each step
-/// writes "selftest: ..." to the log; tests\weston-headless.ps1 checks them.
+procedure THelloForm.SelfTestMessageTimer(Sender: TObject);
+var
+  I: Integer;
+begin
+  // Runs inside the modal loop of the message box (FMX's dialog form): answers No.
+  (Sender as TTimer).Enabled := False;
+  for I := Screen.FormCount - 1 downto 0 do
+    if (Screen.Forms[I] <> Self) and Screen.Forms[I].Visible then
+    begin
+      Screen.Forms[I].ModalResult := mrNo;
+      Exit;
+    end;
+end;
+
+/// --selftest: steps without user input (threads, clipboard, popup, second form, maximize, modal loop, message box);
+/// each step writes "selftest: ..." to the log; tests\weston-headless.ps1 checks them.
 procedure THelloForm.SelfTestStep(Sender: TObject);
 var
   Svc: IFMXClipboardService;
@@ -632,6 +649,22 @@ begin
         FSelfTimer.Enabled := True;
       end;
     14:
+      begin
+        FSelfTimer.Enabled := False;
+        T := TTimer.Create(Self);
+        try
+          T.Interval := 700;
+          T.OnTimer := SelfTestMessageTimer;
+          T.Enabled := True;
+          R := TDialogServiceSync.MessageDialog('Self-test message box', TMsgDlgType.mtConfirmation,
+            [TMsgDlgBtn.mbYes, TMsgDlgBtn.mbNo], TMsgDlgBtn.mbYes, 0);
+          Log(Format('selftest: message result %d', [R]));
+        finally
+          T.Free;
+        end;
+        FSelfTimer.Enabled := True;
+      end;
+    15:
       begin
         FSelfTimer.Enabled := False;
         Log('selftest: done');

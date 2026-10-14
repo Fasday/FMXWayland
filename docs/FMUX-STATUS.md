@@ -5,8 +5,8 @@ All 186 function pointers of `FMUX.Api` (RAD Studio 37.0). *implemented*: does w
 returns zero/nil/False).
 
 Generated with `.\tools\gen-fmux-api.ps1 -StatusFile docs\FMUX-STATUS.md` (the notes come from the
-`// partial:` comments in `src\FMXWayland.Fmux.pas`); a stub that FMX calls logs `<name> is not implemented`
-once at run time.
+`// partial:` comments in `src\FMXWayland.Fmux.pas` and `src\FMXWayland.Cairo.pas`); a stub that FMX
+calls logs `<name> is not implemented` once at run time.
 
 | Function | FMXWayland |
 |---|---|
@@ -50,49 +50,49 @@ once at run time.
 | FmuxGetKeyState | implemented |
 | FmuxCreateTimer | implemented |
 | FmuxDestroyTimer | implemented |
-| FmuxSetClipRects | stub |
-| FmuxIntersectClipRect | stub |
-| FmuxExcludeClipRect | stub |
-| FmuxSave | stub |
-| FmuxRestore | stub |
-| FmuxCanvasSetQuality | stub |
-| FmuxCanvasClear | stub |
-| FmuxCanvasClearRect | stub |
-| FmuxCanvasSetMatrix | stub |
-| FmuxCanvasSetFillColor | stub |
-| FmuxCanvasSetFillGradient | stub |
-| FmuxCanvasSetFillRadialGradient | stub |
-| FmuxCanvasSetFillBitmap | stub |
-| FmuxCanvasEllipse | stub |
-| FmuxCanvasRect | stub |
-| FmuxCanvasLine | stub |
-| FmuxCanvasPath | stub |
-| FmuxCanvasFill | stub |
-| FmuxCanvasPtInPath | stub |
-| FmuxCanvasStroke | stub |
-| FmuxCanvasSetStrokeWidth | stub |
-| FmuxCanvasSetStrokeCap | stub |
-| FmuxCanvasSetStrokeJoin | stub |
-| FmuxCanvasSetStrokeDash | stub |
+| FmuxSetClipRects | implemented |
+| FmuxIntersectClipRect | implemented |
+| FmuxExcludeClipRect | implemented |
+| FmuxSave | implemented |
+| FmuxRestore | implemented |
+| FmuxCanvasSetQuality | implemented |
+| FmuxCanvasClear | implemented |
+| FmuxCanvasClearRect | implemented |
+| FmuxCanvasSetMatrix | implemented |
+| FmuxCanvasSetFillColor | implemented |
+| FmuxCanvasSetFillGradient | implemented |
+| FmuxCanvasSetFillRadialGradient | implemented |
+| FmuxCanvasSetFillBitmap | implemented |
+| FmuxCanvasEllipse | implemented |
+| FmuxCanvasRect | implemented |
+| FmuxCanvasLine | implemented |
+| FmuxCanvasPath | implemented |
+| FmuxCanvasFill | implemented |
+| FmuxCanvasPtInPath | implemented |
+| FmuxCanvasStroke | implemented |
+| FmuxCanvasSetStrokeWidth | implemented |
+| FmuxCanvasSetStrokeCap | implemented |
+| FmuxCanvasSetStrokeJoin | implemented |
+| FmuxCanvasSetStrokeDash | implemented |
 | FmuxBitmapCreate | implemented |
 | FmuxBitmapDestroy | implemented |
 | FmuxGetBitmapInfo | implemented |
 | FmuxCanvasDrawBitmap | implemented |
-| FmuxCreateContext | stub |
-| FmuxDestroyContext | stub |
-| FmuxBitmapLoad | stub |
-| FmuxBitmapSave | stub |
-| FmuxCreateTextLayout | stub |
-| FmuxDestroyTextLayout | stub |
-| FmuxDrawTextLayout | stub |
-| FmuxGetTextLayoutRect | stub |
-| FmuxLayoutPositionAtPoint | stub |
-| FmuxLayoutMeasureRange | stub |
-| FmuxLayoutToPath | stub |
+| FmuxCreateContext | implemented |
+| FmuxDestroyContext | implemented |
+| FmuxBitmapLoad | implemented |
+| FmuxBitmapSave | implemented |
+| FmuxCreateTextLayout | implemented |
+| FmuxDestroyTextLayout | implemented |
+| FmuxDrawTextLayout | implemented |
+| FmuxGetTextLayoutRect | implemented |
+| FmuxLayoutPositionAtPoint | implemented |
+| FmuxLayoutMeasureRange | implemented |
+| FmuxLayoutToPath | implemented |
 | FmuxAddCustomFont | stub |
 | FmuxAddCustomFontFromData | stub |
-| FmuxGetFontCount | stub |
-| FmuxGetFontName | stub |
+| FmuxGetFontCount | partial: the system's font families |
+| FmuxGetFontName | partial: names of FmuxGetFontCount (custom fonts: not yet) |
 | FmuxSetLog | partial: FMXWayland logs to stderr itself (FMXWAYLAND_LOG) |
 | FmuxCreateSharedContext | stub |
 | FmuxCreateThreadContext | stub |

@@ -11,7 +11,8 @@
      22.04 and later, Debian 12, Fedora, ...; -Sdk D:\LinuxSDK\ubuntu-26.04 links against Ubuntu 26.04, glibc 2.43).
      dcclinux64 links with LLVM lld; --syslibroot is the SDK, --libpath the folders with libc, crt*.o, libgcc and Delphi's
      librtlhelper.
-  4. Copies libsk4d.so (Skia, from $(BDS)\Redist\linux64) next to the program.
+  4. Copies libsk4d.so (Skia, from $(BDS)\Redist\linux64) next to the program when it links FMX's Skia units (the map
+     file lists System.Skia.API); programs on FMX's default canvas (cairo and Pango, FMXWayland.Cairo) need none.
 
   All output goes to <BuildRoot> (default D:\Work\FMXWayland-build): bin\Linux64\<Config>\<Name>,
   dcu\Linux64\<Config>\<Name>\.
@@ -19,6 +20,7 @@
 .EXAMPLE
   .\tools\build.ps1 -Project samples\Hello\Hello.dpr
   .\tools\build.ps1 -Project samples\Hello\Hello.dpr -Config Debug
+  .\tools\build.ps1 -Project samples\Hello\Hello.dpr -Define NOSKIA -BuildRoot D:\Work\FMXWayland-build\cairo
 #>
 param(
   [Parameter(Mandatory = $true)] [string] $Project,
@@ -104,5 +106,13 @@ $code = $LASTEXITCODE
 $out | Where-Object { "$_" -notmatch '^(Linker command line:|Embarcadero|Copyright)' } | ForEach-Object { Write-Host "$_" }
 if ($code -ne 0) { throw "dcclinux64 failed ($code)" }
 
-Copy-Item (Join-Path $Bds 'Redist\linux64\libsk4d.so') $OutDir -Force
+# libsk4d.so only for programs with FMX's Skia units (FMX.Skia loads it at run time): the map file says whether
+# System.Skia.API was linked. Programs on FMX's default canvas (cairo, Pango) do not need it.
+$map = Join-Path $OutDir "$Name.map"
+if (-not (Test-Path $map) -or (Select-String -Path $map -Pattern 'System.Skia.API.o' -SimpleMatch -Quiet)) {
+  Copy-Item (Join-Path $Bds 'Redist\linux64\libsk4d.so') $OutDir -Force
+  Write-Host "libsk4d.so -> $OutDir (Skia)"
+} else {
+  Write-Host 'No Skia units linked: no libsk4d.so needed (FMX''s cairo canvas)'
+}
 Write-Host "OK -> $(Join-Path $OutDir $Name)"
