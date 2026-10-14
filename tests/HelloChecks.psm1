@@ -46,6 +46,7 @@ function Get-HelloSelfTestChecks([string] $Log, [string] $Prefix, [double] $Scal
     "$($Prefix): select folder" = $Log -match 'selftest: folder result True sub in the folder True'
     "$($Prefix): file dialog cancelled" = $Log -match 'selftest: cancelled dialog result False, 0 files'
     "$($Prefix): self-test done" = $Log -match 'selftest: done'
+    "$($Prefix): no exception (Application.OnException)" = $Log -notmatch '\[hello\] exception'
     "$($Prefix): clean exit" = $Log -match 'exit=0'
   }
 }

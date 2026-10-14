@@ -92,6 +92,7 @@ type
     procedure FormResize(Sender: TObject);
     procedure FormActivate(Sender: TObject);
     procedure FormDeactivate(Sender: TObject);
+    procedure AppException(Sender: TObject; E: Exception);
   end;
 
 var
@@ -328,6 +329,7 @@ begin
   OnResize := FormResize;
   OnActivate := FormActivate;
   OnDeactivate := FormDeactivate;
+  Application.OnException := AppException;
   Log('created');
   Log('canvas ' + TCanvasManager.DefaultCanvas.ClassName);
   if Assigned(HelloCanvasInfo) then
@@ -377,6 +379,13 @@ end;
 procedure THelloForm.FormActivate(Sender: TObject);
 begin
   Log('form activated');
+end;
+
+procedure THelloForm.AppException(Sender: TObject; E: Exception);
+begin
+  // In the log (tests: no exception may pass unnoticed), then FMX's message box as without a handler.
+  Log(Format('exception %s: %s (at %p)', [E.ClassName, E.Message, ExceptAddr]));
+  Application.ShowException(E);
 end;
 
 procedure THelloForm.FormDeactivate(Sender: TObject);

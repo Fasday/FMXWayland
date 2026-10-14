@@ -597,7 +597,7 @@ t close "$MAIN"
 check "main form closed by the compositor" wait_log '\[hello\] destroyed' 1 5
 wait $APP
 check "clean exit" grep -q 'exit=0' "$PLOG"
-check "no errors in the program's logs" bash -c "! grep -s -q -E 'protocol error|FMXWayland: error' '$PLOG' '$OUT/selftest.log'"
+check "no errors in the program's logs" bash -c "! grep -s -q -E 'protocol error|FMXWayland: error|\\[hello\\] exception' '$PLOG' '$OUT/selftest.log'"
 }
 
 # 3. Hello --own-titlebar with input: IFMXWaylandWindowFrame as a program with its own title bar uses it.
