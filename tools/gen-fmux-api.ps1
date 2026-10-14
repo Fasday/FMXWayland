@@ -131,6 +131,13 @@ Write-Host "FMUX.Api.pas -> $Out ($($pointers.Count) function pointers, $implCou
 
 if ($StatusFile) {
   $st = New-Object Text.StringBuilder
+  [void]$st.Append("# FMUX functions: status in FMXWayland`n`n")
+  [void]$st.Append("All $($pointers.Count) function pointers of ``FMUX.Api`` (RAD Studio $(Split-Path $Bds -Leaf)). *implemented*: does what libfmux did;`n")
+  [void]$st.Append("*partial*: assigned, but only part of it is done (the note says what); *stub*: the generated stub (logs once,`n")
+  [void]$st.Append("returns zero/nil/False).`n`n")
+  [void]$st.Append("Generated with ``.\tools\gen-fmux-api.ps1 -StatusFile docs\FMUX-STATUS.md`` (the notes come from the`n")
+  [void]$st.Append("``// partial:`` comments in ``src\FMXWayland.Fmux.pas``); a stub that FMX calls logs ``<name> is not implemented```n")
+  [void]$st.Append("once at run time.`n`n")
   [void]$st.Append("| Function | FMXWayland |`n|---|---|`n")
   foreach ($p in $pointers) {
     $s = if ($implemented.ContainsKey($p.Name)) { $implemented[$p.Name] } else { 'stub' }
