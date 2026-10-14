@@ -15,6 +15,11 @@
 /// cairo context over the window's retained frame; what changed is then copied into the wl_shm buffer that is
 /// attached to the surface. The Skia raster canvas (GlobalUseSkia) gets the PWlFrame, renders into an FMUX bitmap
 /// (plain memory) and copies it with FmuxCanvasDrawBitmap into the frame.</para>
+/// <para>Dialogs: file dialogs (FmuxFilesDialog: TOpenDialog, TSaveDialog, SelectDirectory) and message dialogs go
+/// to the backend of FMXWayland.Dialogs (by default the xdg-desktop-portal FileChooser, FMX's own forms without a
+/// portal). While a portal dialog is open the loop keeps running (DialogPump) and the program's windows are blocked
+/// as under a modal form (a nil entry on the modal stack); the dialog's parent is the window exported with
+/// xdg-foreign.</para>
 /// <para>The function list with their status is in docs/FMUX-STATUS.md; gen-fmux-api.ps1 reads the assignments in
 /// AssignFmuxApi and FMXWayland.Cairo.AssignCairoApi (a "// partial: ..." comment after an assignment marks a function
 /// that is only partly done).</para>
@@ -33,7 +38,8 @@ uses
   System.SysUtils, System.Types, System.Classes, System.UITypes, System.Math, System.Messaging,
   System.Generics.Collections, FMX.Types, FMX.Graphics, FMX.Forms, FMX.Controls, FMX.Dialogs, FMX.DialogHelper,
   FMX.Platform, FMX.Platform.Linux, FMUX.Api,
-  FMXWayland.Log, FMXWayland.Platform, FMXWayland.Native, FMXWayland.Cairo;
+  FMXWayland.Log, FMXWayland.Posix, FMXWayland.Platform, FMXWayland.Native, FMXWayland.Cairo, FMXWayland.DBus,
+  FMXWayland.DialogTypes, FMXWayland.Dialogs;
 
 type
   /// <summary>An FMX window.</summary>
@@ -99,7 +105,10 @@ type
 var
   GWakeProc: TFmuxWakeMainThreadProc = nil;
   GMainWindow: TFmuxWindow = nil;
+  // The windows of the modal loops, innermost last; nil for a dialog of another client (a portal's).
   GModalStack: TList<TFmuxWindow> = nil;
+  // For each open portal dialog: the window exported as its parent (nil: none).
+  GDialogParents: TList<TFmuxWindow> = nil;
   GVersionInfo: TFmuxVersionInfo;
   GClipboardText: string;
   GDumpDir: string;
@@ -132,11 +141,24 @@ begin
   Result := TFmuxWindow(AWnd);
 end;
 
-/// Input goes to the top modal window and to popups only while a modal loop runs.
+/// Input goes to the top modal window and to popups only while a modal loop runs (none of the program's windows
+/// while another client's dialog is on top).
 function InputAllowed(const AWindow: TWlWindow): Boolean;
 begin
   Result := (GModalStack = nil) or (GModalStack.Count = 0) or (AWindow = GModalStack.Last) or
     (AWindow.Kind = TWlWindowKind.Popup);
+end;
+
+/// The window of the innermost modal form (other clients' dialogs skipped), or nil.
+function TopModalWindow: TFmuxWindow;
+var
+  I: Integer;
+begin
+  Result := nil;
+  if GModalStack <> nil then
+    for I := GModalStack.Count - 1 downto 0 do
+      if GModalStack[I] <> nil then
+        Exit(GModalStack[I]);
 end;
 
 {$ENDREGION}
@@ -470,10 +492,11 @@ end;
 procedure TFmuxWindow.DoActivate(const AActive: Boolean);
 begin
   // A window below a modal one that the compositor activates (the user clicked it) stays inactive for FMX; the modal
-  // window asks to be activated instead, as on other platforms.
+  // window asks to be activated instead, as on other platforms (a portal's dialog is the compositor's business).
   if AActive and not InputAllowed(Self) then
   begin
-    GModalStack.Last.Activate;
+    if GModalStack.Last <> nil then
+      GModalStack.Last.Activate;
     Exit;
   end;
   if Assigned(FCreate.Activate) then
@@ -739,6 +762,7 @@ end;
 procedure WlDestroyWindow(Wnd: Pointer); cdecl;
 var
   W: TFmuxWindow;
+  I: Integer;
 begin
   W := Win(Wnd);
   if W = nil then
@@ -747,6 +771,11 @@ begin
     GMainWindow := nil;
   if GModalStack <> nil then
     GModalStack.Remove(W);
+  // Its export for a portal dialog ends with it.
+  if GDialogParents <> nil then
+    for I := 0 to GDialogParents.Count - 1 do
+      if GDialogParents[I] = W then
+        GDialogParents[I] := nil;
   W.Free;
 end;
 
@@ -986,8 +1015,8 @@ begin
     GModalStack := TList<TFmuxWindow>.Create;
   if (W.Parent = nil) and (W.Kind = TWlWindowKind.Toplevel) then
   begin
-    if GModalStack.Count > 0 then
-      W.Parent := GModalStack.Last
+    if TopModalWindow <> nil then
+      W.Parent := TopModalWindow
     else if (GMainWindow <> nil) and (GMainWindow <> W) then
       W.Parent := GMainWindow;
     W.SetTransientParent;
@@ -1292,9 +1321,8 @@ function WlMessageDialog(AMessage: PChar; DlgType, Buttons: Integer): Integer; c
 var
   Btns: TMsgDlgButtons;
   B, Default: TMsgDlgBtn;
-  R: TModalResult;
 begin
-  // No native toolkit: FMX's own dialog form (FMX.DialogHelper, the one of its asynchronous dialogs), modal.
+  // FMX passes no default button: the first affirmative one is.
   Btns := [];
   for B := Low(TMsgDlgBtn) to High(TMsgDlgBtn) do
     if Buttons and CDialogButtonBits[B] <> 0 then
@@ -1308,14 +1336,216 @@ begin
       Default := B;
       Break;
     end;
-  R := mrNone;
-  TDialogHelper.MessageDialog(string(AMessage), TMsgDlgType(EnsureRange(DlgType, Ord(Low(TMsgDlgType)),
-    Ord(High(TMsgDlgType)))), Btns, Default, 0,
-    procedure(const AResult: TModalResult)
+  // The backend's message dialog: by default FMX's own dialog form (FMX.DialogHelper), modal.
+  Result := GetWaylandDialogBackend.MessageDialog(string(AMessage),
+    TMsgDlgType(EnsureRange(DlgType, Ord(Low(TMsgDlgType)), Ord(High(TMsgDlgType)))), Btns, Default);
+end;
+
+function WlInputQuery(ACaption, APromt, AValue: PChar; MaxLength: Integer): Boolean; cdecl;
+var
+  Values: TArray<string>;
+begin
+  // FMX's own input queries use its form directly; this serves direct callers. MaxLength counts the NUL.
+  Values := [string(AValue)];
+  Result := GetWaylandDialogBackend.InputQuery(string(ACaption), [string(APromt)], Values);
+  if Result and (AValue <> nil) and (MaxLength > 0) and (Length(Values) = 1) then
+    StrPLCopy(AValue, Values[0], MaxLength - 1);
+end;
+
+/// The filters of an FMX filter string: "name|patterns|name|patterns..." with patterns separated by ';'.
+function ParseFilter(const AFilter: string): TArray<TWaylandFileFilter>;
+var
+  Parts, Patterns: TArray<string>;
+  Pattern: string;
+  F: TWaylandFileFilter;
+  I: Integer;
+begin
+  Result := nil;
+  if AFilter.Trim = '' then
+    Exit;
+  Parts := AFilter.Split(['|']);
+  I := 0;
+  while I < Length(Parts) do
+  begin
+    Patterns := nil;
+    if I + 1 < Length(Parts) then
+      for Pattern in Parts[I + 1].Split([';']) do
+        if Pattern.Trim <> '' then
+          Patterns := Patterns + [Pattern.Trim];
+    if Patterns = nil then
+      Patterns := ['*'];
+    F.Name := Parts[I].Trim;
+    if F.Name = '' then
+      F.Name := string.Join(';', Patterns);
+    F.Patterns := Patterns;
+    Result := Result + [F];
+    Inc(I, 2);
+  end;
+end;
+
+function WlFilesDialog(Title, Filter, InitialName, InitialDir, Files: PChar; MaxLength: Integer;
+  var FilterIndex: Integer; AOptions: Integer): Boolean; cdecl;
+var
+  Request: TWaylandFileDialogRequest;
+  Chosen: TArray<string>;
+  Text, Next: string;
+  Index, Kept, I: Integer;
+begin
+  // FMX (TPlatformLinux.DialogOpenFiles/DialogSaveFiles) passes a buffer of MaxLength characters (with the NUL) and
+  // reads it as text, one file per line; FilterIndex is one based both ways.
+  Result := False;
+  if (Files = nil) or (MaxLength <= 0) then
+    Exit;
+  Files^ := #0;
+  if AOptions and FMUX_FilesDialog_SAVE <> 0 then
+    Request.Kind := TWaylandFileDialogKind.SaveFile
+  else if AOptions and FMUX_FilesDialog_FOLDER <> 0 then
+    Request.Kind := TWaylandFileDialogKind.SelectFolder
+  else
+    Request.Kind := TWaylandFileDialogKind.OpenFile;
+  Request.Title := string(Title);
+  Request.InitialFile := string(InitialName);
+  Request.InitialFolder := string(InitialDir);
+  Request.Filters := ParseFilter(string(Filter));
+  Request.FilterIndex := FilterIndex;
+  Request.Multiple := (AOptions and FMUX_FilesDialog_MULTY <> 0) and
+    (Request.Kind <> TWaylandFileDialogKind.SaveFile);
+  Request.ConfirmOverwrite := AOptions and FMUX_FilesDialog_OVERWRITE <> 0;
+  WlLog(TWlLogLevel.Debug, 'files dialog kind %d "%s" filter "%s" name "%s" folder "%s" options $%x',
+    [Ord(Request.Kind), Request.Title, string(Filter), Request.InitialFile, Request.InitialFolder, AOptions]);
+  Index := FilterIndex;
+  if not GetWaylandDialogBackend.FileDialog(Request, Chosen, Index) or (Chosen = nil) then
+    Exit;
+  // Whole names only: what does not fit into FMX's buffer is left out (and logged).
+  Text := '';
+  Kept := 0;
+  for I := 0 to High(Chosen) do
+  begin
+    if Kept = 0 then
+      Next := Chosen[I]
+    else
+      Next := Text + sLineBreak + Chosen[I];
+    if Length(Next) >= MaxLength then
+      Break;
+    Text := Next;
+    Inc(Kept);
+  end;
+  if Kept < Length(Chosen) then
+    WlLog(TWlLogLevel.Warning, 'files dialog: %d of %d names fit into FMX''s buffer of %d characters',
+      [Kept, Length(Chosen), MaxLength]);
+  if Kept = 0 then
+    Exit;
+  Move(PChar(Text)^, Files^, Length(Text) * SizeOf(Char));
+  Files[Length(Text)] := #0;
+  FilterIndex := Index;
+  Result := True;
+end;
+
+/// Waits for AFd (the portal's D-Bus connection) the way a modal form waits: the loop goes on (events, timers,
+/// painting, FMX's idle processing) until AFd is readable, ATimeoutMs pass or the application terminates (False).
+function DialogPump(const AFd, ATimeoutMs: Integer): Boolean;
+var
+  D: TWlDisplay;
+  Ready: Boolean;
+  Watch: NativeInt;
+  Deadline, Left: Int64;
+begin
+  D := Disp;
+  Ready := False;
+  Watch := D.AddFdWatch(AFd, POLLIN,
+    procedure
     begin
-      R := AResult;
-    end, True);
-  Result := R;
+      Ready := True;
+    end);
+  try
+    Deadline := MonotonicMs + ATimeoutMs;
+    while not Ready and not D.Terminated do
+    begin
+      if not D.ProcessEvents(0) then
+      begin
+        if Assigned(D.IdleProc) then
+          D.IdleProc();
+        Left := Deadline - MonotonicMs;
+        if Ready or D.Terminated or (Left <= 0) then
+          Break;
+        D.ProcessEvents(Integer(Left));
+      end;
+      if MonotonicMs >= Deadline then
+        Break;
+    end;
+  finally
+    D.RemoveFdWatch(Watch);
+  end;
+  Result := not D.Terminated;
+end;
+
+/// The toplevel a dialog opened now belongs to: the innermost modal form, else the focused window (the toplevel of
+/// a focused popup), else the main window.
+function DialogOwner: TFmuxWindow;
+var
+  W: TWlWindow;
+begin
+  Result := TopModalWindow;
+  if Result <> nil then
+    Exit;
+  W := Disp.KeyboardWindow;
+  if W = nil then
+    W := Disp.LastInputWindow;
+  while (W <> nil) and (W.Kind = TWlWindowKind.Popup) do
+    W := W.Parent;
+  if (W <> nil) and Disp.Windows.Contains(W) and W.Visible then
+    Exit(TFmuxWindow(W));
+  Result := GMainWindow;
+end;
+
+/// A portal dialog opens: the program's windows take no input meanwhile, as under a modal form; its owner is
+/// exported with xdg-foreign so that the portal can make its dialog a child of it ('' without xdg-foreign).
+function DialogBeginModal: string;
+var
+  W: TFmuxWindow;
+  Handle: string;
+begin
+  if GModalStack = nil then
+    GModalStack := TList<TFmuxWindow>.Create;
+  if GDialogParents = nil then
+    GDialogParents := TList<TFmuxWindow>.Create;
+  W := DialogOwner;
+  GModalStack.Add(nil);
+  Handle := '';
+  if W <> nil then
+    Handle := W.ExportToplevel;
+  if Handle <> '' then
+  begin
+    GDialogParents.Add(W);
+    Result := 'wayland:' + Handle;
+  end
+  else
+  begin
+    GDialogParents.Add(nil);
+    Result := '';
+  end;
+end;
+
+/// The portal dialog of the last DialogBeginModal is closed.
+procedure DialogEndModal;
+var
+  W: TFmuxWindow;
+  I: Integer;
+begin
+  if (GDialogParents <> nil) and (GDialogParents.Count > 0) then
+  begin
+    W := GDialogParents.Last;
+    GDialogParents.Delete(GDialogParents.Count - 1);
+    if W <> nil then
+      W.UnexportToplevel;
+  end;
+  if GModalStack <> nil then
+    for I := GModalStack.Count - 1 downto 0 do
+      if GModalStack[I] = nil then
+      begin
+        GModalStack.Delete(I);
+        Break;
+      end;
 end;
 
 {$ENDREGION}
@@ -1407,7 +1637,10 @@ begin
   FMUX.Api.FmuxClipboardHasCustom := WlClipboardHasCustom; // partial: no custom formats yet (always False)
   FMUX.Api.FmuxClipboardGetCustom := WlClipboardGetCustom; // partial: no custom formats yet
 
-  FMUX.Api.FmuxMessageDialog := WlMessageDialog; // partial: FMX's own dialog form, not a native one
+  FMUX.Api.FmuxMessageDialog := WlMessageDialog; // partial: FMX's own dialog form (or the dialog backend's)
+  FMUX.Api.FmuxInputQuery := WlInputQuery; // partial: the dialog backend's (FMX uses its own form anyway)
+  FMUX.Api.FmuxFilesDialog := WlFilesDialog;
+  ConfigureWaylandDialogHooks(DialogPump, DialogBeginModal, DialogEndModal);
 
   FMUX.Api.FmuxImeEnterControl := WlImeEnterControl; // partial: no-op (text-input-v3 not used yet)
   FMUX.Api.FmuxImeExitControl := WlImeExitControl; // partial: no-op
@@ -1419,6 +1652,7 @@ initialization
   FillChar(GVersionInfo, SizeOf(GVersionInfo), 0);
 
 finalization
+  FreeAndNil(GDialogParents);
   FreeAndNil(GModalStack);
   WlDisconnect;
 
