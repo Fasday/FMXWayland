@@ -73,10 +73,31 @@ function ExecuteFMXFileDialog(const Request: TWaylandFileDialogRequest; out File
 implementation
 
 uses
-  System.IOUtils, System.Math, System.Masks, System.Generics.Collections,
+  System.IOUtils, System.Math, System.Masks, System.Generics.Collections, System.Generics.Defaults,
   FMX.Dialogs, FMX.DialogHelper, FMX.Dialogs.Default;
 
 {$R *.fmx}
+
+resourcestring
+  SOpenCaption = 'Open';
+  SSaveCaption = 'Save As';
+  SFolderCaption = 'Select Folder';
+  SOpenButton = 'Open';
+  SSaveButton = 'Save';
+  SFolderButton = 'Select';
+  SFolderNotFound = 'Folder not found: %s';
+  SFileNotFound = 'File not found: %s';
+  SCounts = 'Folders: %d   Files: %d';
+  SNameMissing = 'Enter a file name.';
+  SOneOnly = 'Select one file or one folder.';
+  SUnsupportedName = 'The name contains characters that FMX''s file lists cannot hold (line breaks).';
+  SNoSaveFolder = 'The folder to save into does not exist.';
+  SOverwrite = '%s already exists.' + sLineBreak + 'Do you want to replace it?';
+  SNewFolderCaption = 'New Folder';
+  SNewFolderPrompt = 'Folder name';
+  SNewFolderName = 'New folder';
+  SBadFolderName = 'Enter a folder name without path separators.';
+  SNameExists = 'That name exists already.';
 
 function ExecuteFMXFileDialog(const Request: TWaylandFileDialogRequest; out Files: TArray<string>;
   var FilterIndex: Integer): Boolean;
@@ -106,16 +127,25 @@ var
   Folder: string;
 begin
   FRequest := Request;
-  if Request.Title <> '' then
-    Caption := Request.Title;
   case Request.Kind of
     TWaylandFileDialogKind.OpenFile:
-      AcceptButton.Text := 'Открыть';
+      begin
+        Caption := SOpenCaption;
+        AcceptButton.Text := SOpenButton;
+      end;
     TWaylandFileDialogKind.SaveFile:
-      AcceptButton.Text := 'Сохранить';
+      begin
+        Caption := SSaveCaption;
+        AcceptButton.Text := SSaveButton;
+      end;
     TWaylandFileDialogKind.SelectFolder:
-      AcceptButton.Text := 'Выбрать папку';
+      begin
+        Caption := SFolderCaption;
+        AcceptButton.Text := SFolderButton;
+      end;
   end;
+  if Request.Title <> '' then
+    Caption := Request.Title;
   NameRow.Visible := Request.Kind <> TWaylandFileDialogKind.SelectFolder;
   FilterRow.Visible := NameRow.Visible and (Length(Request.Filters) > 0);
   Footer.Height := 72 + IfThen(NameRow.Visible, 34, 0) + IfThen(FilterRow.Visible, 34, 0);
@@ -147,6 +177,11 @@ begin
   if not DirectoryExists(Folder) then
     Folder := '/';
   Navigate(Folder);
+  // The keyboard starts where a name is typed (saving) or a file chosen.
+  if Request.Kind = TWaylandFileDialogKind.SaveFile then
+    ActiveControl := NameEdit
+  else
+    ActiveControl := FileList;
 end;
 
 function TFMXWaylandFileDialog.ResolvePath(const Value: string): string;
@@ -173,7 +208,8 @@ begin
   begin
     if Pattern.Trim = '*.*' then
       Exit(True);
-    if (Pattern.Trim <> '') and MatchesMask(FileName, Pattern.Trim, True) then
+    // Not case-sensitive, as on Windows and in GTK 4's file chooser.
+    if (Pattern.Trim <> '') and MatchesMask(FileName, Pattern.Trim, False) then
       Exit(True);
   end;
   Result := False;
@@ -197,7 +233,7 @@ begin
     Target := ResolvePath(Folder);
     if not DirectoryExists(Target) then
     begin
-      ShowError('Папка не найдена: ' + Target);
+      ShowError(Format(SFolderNotFound, [Target]));
       Exit;
     end;
     // Read first, so a permission error keeps the previous folder and its contents usable.
@@ -215,8 +251,8 @@ begin
         else if (FRequest.Kind <> TWaylandFileDialogKind.SelectFolder) and MatchesFilter(Name) then
           Names.Add(Path);
       end;
-      Directories.Sort;
-      Names.Sort;
+      Directories.Sort(TIStringComparer.Ordinal);
+      Names.Sort(TIStringComparer.Ordinal);
       Paths := Directories.ToArray + Names.ToArray;
       FUpdating := True;
       FileList.BeginUpdate;
@@ -230,7 +266,7 @@ begin
           Item := TListBoxItem.Create(FileList);
           Item.Text := TPath.GetFileName(Paths[I]);
           if FDirectories[I] then
-            Item.Text := '[Папка] ' + Item.Text;
+            Item.Text := Item.Text + '/';
           Item.Height := 28;
           FileList.AddObject(Item);
         end;
@@ -238,7 +274,7 @@ begin
         LocationEdit.Text := FFolder;
         UpButton.Enabled := FFolder <> '/';
         StatusLabel.TextSettings.FontColor := TAlphaColorRec.Gray;
-        StatusLabel.Text := Format('Папок: %d   Файлов: %d', [Directories.Count, Names.Count]);
+        StatusLabel.Text := Format(SCounts, [Directories.Count, Names.Count]);
       finally
         FileList.EndUpdate;
         FUpdating := False;
@@ -340,7 +376,7 @@ var
   R: TModalResult;
 begin
   R := mrNone;
-  TDialogHelper.MessageDialog('Файл уже существует:' + sLineBreak + FileName + sLineBreak + 'Заменить его?',
+  TDialogHelper.MessageDialog(Format(SOverwrite, [FileName]),
     TMsgDlgType.mtConfirmation, [TMsgDlgBtn.mbYes, TMsgDlgBtn.mbNo], TMsgDlgBtn.mbNo, 0,
     procedure(const Value: TModalResult)
     begin
@@ -374,7 +410,7 @@ begin
       begin
         if NameEdit.Text = '' then
         begin
-          ShowError('Укажите имя файла.');
+          ShowError(SNameMissing);
           NameEdit.SetFocus;
           Exit;
         end;
@@ -388,31 +424,31 @@ begin
     end;
     if not FRequest.Multiple and (Length(Paths) > 1) then
     begin
-      ShowError('Выберите один файл или одну папку.');
+      ShowError(SOneOnly);
       Exit;
     end;
     for Path in Paths do
     begin
       if Path.Contains(#0) or Path.Contains(#10) or Path.Contains(#13) then
       begin
-        ShowError('Имя содержит символы, которые не поддерживаются списком файлов FMX.');
+        ShowError(SUnsupportedName);
         Exit;
       end;
       if (FRequest.Kind = TWaylandFileDialogKind.SelectFolder) and not DirectoryExists(Path) then
       begin
-        ShowError('Папка не найдена: ' + Path);
+        ShowError(Format(SFolderNotFound, [Path]));
         Exit;
       end;
       if (FRequest.Kind = TWaylandFileDialogKind.OpenFile) and not FileExists(Path) then
       begin
-        ShowError('Файл не найден: ' + Path);
+        ShowError(Format(SFileNotFound, [Path]));
         Exit;
       end;
       if FRequest.Kind = TWaylandFileDialogKind.SaveFile then
       begin
         if not DirectoryExists(TPath.GetDirectoryName(Path)) then
         begin
-          ShowError('Папка для сохранения не существует.');
+          ShowError(SNoSaveFolder);
           Exit;
         end;
         if FRequest.ConfirmOverwrite and FileExists(Path) and not ConfirmOverwrite(Path) then
@@ -432,20 +468,20 @@ var
   Values: TArray<string>;
   Path: string;
 begin
-  Values := ['Новая папка'];
-  if not DefaultInputQuery('Создать папку', ['Имя папки'], Values, nil) then
+  Values := [SNewFolderName];
+  if not DefaultInputQuery(SNewFolderCaption, [SNewFolderPrompt], Values, nil) then
     Exit;
   if (Values[0] = '') or (Values[0] = '.') or (Values[0] = '..') or Values[0].Contains('/') or
     Values[0].Contains(#0) then
   begin
-    ShowError('Укажите имя папки без разделителей пути.');
+    ShowError(SBadFolderName);
     Exit;
   end;
   Path := TPath.Combine(FFolder, Values[0]);
   try
     if DirectoryExists(Path) or FileExists(Path) then
     begin
-      ShowError('Такое имя уже существует.');
+      ShowError(SNameExists);
       Exit;
     end;
     TDirectory.CreateDirectory(Path);
