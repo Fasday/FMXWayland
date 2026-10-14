@@ -2,7 +2,8 @@
 
 Нативная платформа Wayland для Delphi FireMonkey (FMX) под Linux на Object Pascal — без закрытой библиотеки
 Embarcadero `libfmux.so` и без GTK. Программа FMX работает с композитором Wayland напрямую (libwayland-client и
-libxkbcommon загружаются через `dlopen`) и рисует Skia-канвасом FMX в буферы общей памяти (wl_shm).
+libxkbcommon загружаются через `dlopen`) и рисует в буферы общей памяти (wl_shm) стандартным канвасом FMX для Linux
+(cairo и Pango, как с libfmux) или, по желанию, Skia-канвасом.
 
 **Как это устроено.** FMX для Linux вызывает libfmux через ~186 указателей на функции модуля `FMUX.Api`.
 Прекомпилированные модули FMX принимают другой `FMUX.Api` с тем же интерфейсом, поэтому `tools\gen-fmux-api.ps1`
@@ -18,11 +19,17 @@ libxkbcommon загружаются через `dlopen`) и рисует Skia-к
 изменение размера), если композитор не рисует их сам (WSLg, Weston, GNOME). Проверено на WSLg (тест с настоящим
 вводом с Windows: `tests\hello-e2e.ps1`) и на headless Weston 14 с масштабом 1 и 2 (`tests\weston-headless.ps1`).
 
-**Требования:** Delphi 13 с платформой Linux, Linux SDK (`tools\make-linux-sdk.ps1` делает его из дистрибутива WSL),
-в программе `GlobalUseSkia := True` (канвас cairo из `FMX.Canvas.Linux` не поддерживается), рядом с программой
-`libsk4d.so`.
+**Канвасы.** Стандартный канвас FMX (`FMX.Canvas.Linux`) работает через функции канваса, текста и кодеков FMUX,
+реализованные в `FMXWayland.Cairo` на системных cairo, Pango и gdk-pixbuf (их прислал Hemul GM, спасибо!); FMX
+перерисовывает только изменённую область сохранённого кадра окна. Skia — по желанию: `FMX.Skia` и
+`GlobalUseSkia := True` в программе, `libsk4d.so` рядом с ней.
 
-**Сборка:** `.\tools\build.ps1 -Project samples\Hello\Hello.dpr`. **Запуск в WSLg:**
+**Требования:** Delphi 13 с платформой Linux, Linux SDK (`tools\make-linux-sdk.ps1` делает его из дистрибутива WSL);
+в системе libwayland-client, libxkbcommon и для стандартного канваса cairo, Pango, pangocairo, gdk-pixbuf (есть на
+любом десктопе).
+
+**Сборка:** `.\tools\build.ps1 -Project samples\Hello\Hello.dpr` (Skia; с `-Define NOSKIA` — стандартный канвас,
+без `libsk4d.so`). Сравнение двух канвасов: `tests\canvas-check.ps1`. **Запуск в WSLg:**
 `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir WAYLAND_DISPLAY=wayland-0 ./Hello` (без `DISPLAY`).
 
 **Для FastCanvas (Vulkan):** платформенный сервис `IFMXWaylandNativeWindow`
