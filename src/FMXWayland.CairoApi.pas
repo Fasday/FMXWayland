@@ -1,35 +1,91 @@
-{ FMXWayland: system Cairo/Pango/GdkPixbuf bindings. MIT license. }
+{ FMXWayland: system Cairo/Pango/GdkPixbuf bindings.
+  Written by Hemul GM. Copyright (c) 2026 Fasday and contributors. MIT license, see LICENSE. }
+
+/// <summary>Bindings of the system libraries cairo, pango, pangocairo, gdk-pixbuf, gobject and glib, loaded with
+/// dlopen on first use (LoadGraphicsLibraries): programs that never draw with FMX's cairo canvas do not need
+/// them.</summary>
 unit FMXWayland.CairoApi;
 
 interface
 
+const
+  CAIRO_FORMAT_ARGB32 = 0;
+
+  CAIRO_OPERATOR_SOURCE = 1;
+
+  CAIRO_ANTIALIAS_DEFAULT = 0;
+  CAIRO_ANTIALIAS_FAST = 4;
+  CAIRO_ANTIALIAS_BEST = 6;
+
+  CAIRO_FILL_RULE_WINDING = 0;
+  CAIRO_FILL_RULE_EVEN_ODD = 1;
+
+  CAIRO_EXTEND_REPEAT = 1;
+  CAIRO_EXTEND_PAD = 3;
+
+  CAIRO_FILTER_NEAREST = 3;
+  CAIRO_FILTER_BILINEAR = 4;
+
+  CAIRO_PATH_MOVE_TO = 0;
+  CAIRO_PATH_LINE_TO = 1;
+  CAIRO_PATH_CURVE_TO = 2;
+  CAIRO_PATH_CLOSE_PATH = 3;
+
+  PANGO_SCALE = 1024;
+
+  PANGO_STYLE_OBLIQUE = 1;
+  PANGO_STYLE_ITALIC = 2;
+
+  PANGO_ALIGN_LEFT = 0;
+  PANGO_ALIGN_CENTER = 1;
+  PANGO_ALIGN_RIGHT = 2;
+
+  PANGO_WRAP_WORD_CHAR = 2;
+
+  PANGO_ELLIPSIZE_END = 3;
+
+  PANGO_UNDERLINE_SINGLE = 1;
+
+  GDK_COLORSPACE_RGB = 0;
+
 type
+  /// <summary>cairo_matrix_t.</summary>
   TCairoMatrix = record
     XX, YX, XY, YY, X0, Y0: Double;
   end;
   PCairoMatrix = ^TCairoMatrix;
+
+  /// <summary>cairo_path_data_t: a header (Kind = CAIRO_PATH_*, Length = elements including the header) followed
+  /// by its points.</summary>
   TCairoPathData = record
     case Integer of
       0: (Kind, Length: Integer);
       1: (X, Y: Double);
   end;
   PCairoPathData = ^TCairoPathData;
+
+  /// <summary>cairo_path_t.</summary>
   TCairoPath = record
     Status: Integer;
     Data: PCairoPathData;
     Count: Integer;
   end;
   PCairoPath = ^TCairoPath;
+
+  /// <summary>PangoRectangle (Pango units: PANGO_SCALE per pixel).</summary>
   TPangoRectangle = record
     X, Y, Width, Height: Integer;
   end;
   PPangoRectangle = ^TPangoRectangle;
 
+/// <summary>Loads the libraries and their functions (once; thread-safe). Raises an exception that names what is
+/// missing.</summary>
 procedure LoadGraphicsLibraries;
 
 var
   cairo_image_surface_create: function(Format, Width, Height: Integer): Pointer; cdecl;
-  cairo_image_surface_create_for_data: function(Data: Pointer; Format, Width, Height, Stride: Integer): Pointer; cdecl;
+  cairo_image_surface_create_for_data: function(Data: Pointer; Format, Width, Height, Stride: Integer): Pointer;
+    cdecl;
   cairo_surface_destroy: procedure(Surface: Pointer); cdecl;
   cairo_surface_flush: procedure(Surface: Pointer); cdecl;
   cairo_surface_status: function(Surface: Pointer): Integer; cdecl;
@@ -119,7 +175,8 @@ var
   gdk_pixbuf_get_n_channels: function(Pixbuf: Pointer): Integer; cdecl;
   gdk_pixbuf_get_pixels: function(Pixbuf: Pointer): PByte; cdecl;
   gdk_pixbuf_new: function(Colorspace, HasAlpha, BitsPerSample, Width, Height: Integer): Pointer; cdecl;
-  gdk_pixbuf_save_to_bufferv: function(Pixbuf: Pointer; Buffer: PPointer; Size: PNativeUInt; Format: PAnsiChar; Keys, Values: Pointer; Error: PPointer): Integer; cdecl;
+  gdk_pixbuf_save_to_bufferv: function(Pixbuf: Pointer; Buffer: PPointer; Size: PNativeUInt; Format: PAnsiChar;
+    Keys, Values: Pointer; Error: PPointer): Integer; cdecl;
   g_object_unref: procedure(Obj: Pointer); cdecl;
   g_free: procedure(Data: Pointer); cdecl;
   g_error_free: procedure(Error: Pointer); cdecl;

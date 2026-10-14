@@ -1,4 +1,11 @@
-{ FMXWayland: Cairo raster canvas, Pango text and GdkPixbuf codecs. MIT license. }
+{ FMXWayland: Cairo raster canvas, Pango text and GdkPixbuf codecs.
+  Written by Hemul GM. Copyright (c) 2026 Fasday and contributors. MIT license, see LICENSE. }
+
+/// <summary>FMX's default Linux canvas (FMX.Canvas.Linux, TLinuxCanvas: used when GlobalUseSkia is False) served
+/// through the FMUX canvas, text layout and bitmap codec functions, on the system's cairo, Pango and
+/// gdk-pixbuf (loaded at run time, FMXWayland.CairoApi).</summary>
+/// <remarks>The FMUX context handle is a TCairoContext: over a window frame (CreateCairoFrame, made by
+/// FMXWayland.Fmux for each paint) or over an FMUX bitmap (FmuxCreateContext, for TBitmap canvases).</remarks>
 unit FMXWayland.Cairo;
 
 interface
@@ -7,7 +14,8 @@ uses
   System.Types;
 
 type
-  // Shared with the FMUX bitmap adapter. BGRA is premultiplied, exactly like CAIRO_FORMAT_ARGB32.
+  /// <summary>An FMUX bitmap: plain memory, premultiplied BGRA (as CAIRO_FORMAT_ARGB32), 4 bytes per pixel, no
+  /// padding. Shared with the bitmap functions of FMXWayland.Fmux.</summary>
   TFmuxBitmap = record
     Width, Height: Integer;
     Data: Pointer;
@@ -15,11 +23,16 @@ type
   end;
   PFmuxBitmap = ^TFmuxBitmap;
 
+/// <summary>Assigns the canvas, text layout, bitmap codec and font functions of FMUX.Api.</summary>
 procedure AssignCairoApi;
+/// <summary>A cairo context over the pixels of a window frame (premultiplied BGRA, Stride bytes per row), scaled by
+/// Scale (buffer pixels per logical pixel). Free it with DestroyCairoFrame.</summary>
 function CreateCairoFrame(Bits: Pointer; Width, Height, Stride: Integer; Scale: Single): Pointer;
+/// <summary>Frees a context of CreateCairoFrame or FmuxCreateContext.</summary>
 procedure DestroyCairoFrame(Context: Pointer); cdecl;
-procedure CairoDrawBitmap(Context, Bitmap: Pointer; Src, Dst: System.Types.TRectF;
-  Opacity: Single; HighSpeed: Boolean); cdecl;
+/// <summary>FmuxCanvasDrawBitmap for cairo contexts.</summary>
+procedure CairoDrawBitmap(Context, Bitmap: Pointer; Src, Dst: System.Types.TRectF; Opacity: Single;
+  HighSpeed: Boolean); cdecl;
 
 implementation
 
@@ -27,19 +40,19 @@ uses
   System.SysUtils, System.UITypes, System.Math, System.Generics.Collections,
   FMUX.Api, FMXWayland.CairoApi;
 
-const
-  PangoScale = 1024;
-
 type
   TCairoContext = class
     Surface, Cr: Pointer;
     Scale: Double;
+    /// <summary>The current source already carries FMX's opacity (solid colors: TLinuxCanvas multiplies it into the
+    /// color); gradients and bitmaps get it at Fill/Stroke.</summary>
     AlphaInSource: Boolean;
     States: TList<Boolean>;
     constructor Create(Bits: Pointer; Width, Height, Stride: Integer; AScale: Double);
     destructor Destroy; override;
   end;
 
+  /// <summary>A Pango layout and the UTF-16 -> UTF-8 index map of its text.</summary>
   TCairoText = class
     Layout: Pointer;
     Text: string;
@@ -67,7 +80,7 @@ begin
   LoadGraphicsLibraries;
   Scale := AScale;
   States := TList<Boolean>.Create;
-  Surface := cairo_image_surface_create_for_data(Bits, 0, Width, Height, Stride);
+  Surface := cairo_image_surface_create_for_data(Bits, CAIRO_FORMAT_ARGB32, Width, Height, Stride);
   Status := cairo_surface_status(Surface);
   if Status <> 0 then
     raise Exception.Create('FMXWayland: Cairo surface: ' + string(UTF8String(cairo_status_to_string(Status))));
@@ -137,26 +150,31 @@ var
   S: Double;
 begin
   S := C(Context).Scale;
-  M.XX := M11 * S; M.YX := M12 * S;
-  M.XY := M21 * S; M.YY := M22 * S;
-  M.X0 := M31 * S; M.Y0 := M32 * S;
+  M.XX := M11 * S;
+  M.YX := M12 * S;
+  M.XY := M21 * S;
+  M.YY := M22 * S;
+  M.X0 := M31 * S;
+  M.Y0 := M32 * S;
   cairo_set_matrix(C(Context).Cr, @M);
 end;
 
 procedure SetQuality(Context: Pointer; Quality: Integer); cdecl;
 begin
   case Quality of
-    1: cairo_set_antialias(C(Context).Cr, 4); // fast
-    2: cairo_set_antialias(C(Context).Cr, 6); // best
+    FmuxCanvasQualityHighPerformance:
+      cairo_set_antialias(C(Context).Cr, CAIRO_ANTIALIAS_FAST);
+    FmuxCanvasQualityHighQuality:
+      cairo_set_antialias(C(Context).Cr, CAIRO_ANTIALIAS_BEST);
   else
-    cairo_set_antialias(C(Context).Cr, 0);
+    cairo_set_antialias(C(Context).Cr, CAIRO_ANTIALIAS_DEFAULT);
   end;
 end;
 
 procedure SetColor(Context: Pointer; Color: TAlphaColor); cdecl;
 begin
-  cairo_set_source_rgba(C(Context).Cr, ((Color shr 16) and 255) / 255,
-    ((Color shr 8) and 255) / 255, (Color and 255) / 255, (Color shr 24) / 255);
+  cairo_set_source_rgba(C(Context).Cr, ((Color shr 16) and 255) / 255, ((Color shr 8) and 255) / 255,
+    (Color and 255) / 255, (Color shr 24) / 255);
   // TLinuxCanvas.ApplyFill/ApplyStroke already multiplied solid-color alpha by opacity.
   C(Context).AlphaInSource := True;
 end;
@@ -221,16 +239,16 @@ begin
   cairo_new_path(C(Context).Cr);
   cairo_rectangle(C(Context).Cr, X1, Y1, X2 - X1, Y2 - Y1);
   cairo_rectangle(C(Context).Cr, R.Left, R.Top, R.Width, R.Height);
-  cairo_set_fill_rule(C(Context).Cr, 1); // even-odd subtraction
+  cairo_set_fill_rule(C(Context).Cr, CAIRO_FILL_RULE_EVEN_ODD); // even-odd subtraction
   cairo_clip(C(Context).Cr);
-  cairo_set_fill_rule(C(Context).Cr, 0);
+  cairo_set_fill_rule(C(Context).Cr, CAIRO_FILL_RULE_WINDING);
 end;
 
 procedure Clear(Context: Pointer; Color: TAlphaColor); cdecl;
 begin
   Save(Context);
   try
-    cairo_set_operator(C(Context).Cr, 1); // SOURCE, including transparent pixels
+    cairo_set_operator(C(Context).Cr, CAIRO_OPERATOR_SOURCE); // including transparent pixels
     SetColor(Context, Color);
     cairo_paint(C(Context).Cr);
   finally
@@ -267,7 +285,7 @@ begin
       ((Color shr 8) and 255) / 255, (Color and 255) / 255, (Color shr 24) / 255);
     Inc(Stops);
   end;
-  cairo_pattern_set_extend(Pattern, 3); // PAD
+  cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_PAD);
 end;
 
 procedure SetGradient(Context: Pointer; P1, P2: TPointF; Stops: PFmuxGradient; Count: Integer); cdecl;
@@ -310,7 +328,7 @@ var
   B: PFmuxBitmap;
 begin
   B := Bitmap;
-  Result := cairo_image_surface_create_for_data(B.Data, 0, B.Width, B.Height, B.Width * 4);
+  Result := cairo_image_surface_create_for_data(B.Data, CAIRO_FORMAT_ARGB32, B.Width, B.Height, B.Width * 4);
 end;
 
 procedure SetBitmap(Context, Bitmap: Pointer; R: TRectF; Mode: Integer); cdecl;
@@ -326,7 +344,8 @@ begin
   Pattern := cairo_pattern_create_for_surface(Surface);
   try
     FillChar(M, SizeOf(M), 0);
-    M.XX := 1; M.YY := 1;
+    M.XX := 1;
+    M.YY := 1;
     if (Mode <> 1) and (R.Width > 0) and (R.Height > 0) then
     begin
       M.XX := B.Width / R.Width;
@@ -336,9 +355,9 @@ begin
     M.Y0 := -R.Top * M.YY;
     cairo_pattern_set_matrix(Pattern, @M);
     if Mode = 2 then
-      cairo_pattern_set_extend(Pattern, 3)
+      cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_PAD)
     else
-      cairo_pattern_set_extend(Pattern, 1);
+      cairo_pattern_set_extend(Pattern, CAIRO_EXTEND_REPEAT);
     cairo_set_source(C(Context).Cr, Pattern);
     C(Context).AlphaInSource := False;
   finally
@@ -382,8 +401,10 @@ begin
   while I < Count do
   begin
     case P[I].Kind of
-      TFmuxPathPointKind.MoveTo: cairo_move_to(Cr, P[I].Point.X, P[I].Point.Y);
-      TFmuxPathPointKind.LineTo: cairo_line_to(Cr, P[I].Point.X, P[I].Point.Y);
+      TFmuxPathPointKind.MoveTo:
+        cairo_move_to(Cr, P[I].Point.X, P[I].Point.Y);
+      TFmuxPathPointKind.LineTo:
+        cairo_line_to(Cr, P[I].Point.X, P[I].Point.Y);
       TFmuxPathPointKind.CurveTo:
         if I + 2 < Count then
         begin
@@ -391,7 +412,8 @@ begin
             P[I + 2].Point.X, P[I + 2].Point.Y);
           Inc(I, 2);
         end;
-      TFmuxPathPointKind.Close: cairo_close_path(Cr);
+      TFmuxPathPointKind.Close:
+        cairo_close_path(Cr);
     end;
     Inc(I);
   end;
@@ -407,12 +429,18 @@ procedure DrawPath(Context: Pointer; Opacity: Single; Stroke: Boolean);
 begin
   if C(Context).AlphaInSource or (Opacity >= 1) then
   begin
-    if Stroke then cairo_stroke(C(Context).Cr) else cairo_fill(C(Context).Cr);
+    if Stroke then
+      cairo_stroke(C(Context).Cr)
+    else
+      cairo_fill(C(Context).Cr);
     Exit;
   end;
   cairo_save(C(Context).Cr);
   cairo_push_group(C(Context).Cr);
-  if Stroke then cairo_stroke(C(Context).Cr) else cairo_fill(C(Context).Cr);
+  if Stroke then
+    cairo_stroke(C(Context).Cr)
+  else
+    cairo_fill(C(Context).Cr);
   cairo_pop_group_to_source(C(Context).Cr);
   cairo_paint_with_alpha(C(Context).Cr, EnsureRange(Opacity, 0, 1));
   cairo_restore(C(Context).Cr);
@@ -470,8 +498,8 @@ procedure CairoDrawBitmap(Context, Bitmap: Pointer; Src, Dst: TRectF; Opacity: S
 var
   Surface: Pointer;
 begin
-  if (Context = nil) or (Bitmap = nil) or (Src.Width <= 0) or (Src.Height <= 0) or
-    (Dst.Width <= 0) or (Dst.Height <= 0) then
+  if (Context = nil) or (Bitmap = nil) or (Src.Width <= 0) or (Src.Height <= 0) or (Dst.Width <= 0) or
+    (Dst.Height <= 0) then
     Exit;
   Surface := BitmapSurface(Bitmap);
   cairo_save(C(Context).Cr);
@@ -481,9 +509,9 @@ begin
     cairo_scale(C(Context).Cr, Dst.Width / Src.Width, Dst.Height / Src.Height);
     cairo_set_source_surface(C(Context).Cr, Surface, -Src.Left, -Src.Top);
     if HighSpeed then
-      cairo_pattern_set_filter(cairo_get_source(C(Context).Cr), 3) // nearest
+      cairo_pattern_set_filter(cairo_get_source(C(Context).Cr), CAIRO_FILTER_NEAREST)
     else
-      cairo_pattern_set_filter(cairo_get_source(C(Context).Cr), 4); // bilinear
+      cairo_pattern_set_filter(cairo_get_source(C(Context).Cr), CAIRO_FILTER_BILINEAR);
     cairo_paint_with_alpha(C(Context).Cr, EnsureRange(Opacity, 0, 1));
   finally
     cairo_restore(C(Context).Cr);
@@ -496,7 +524,7 @@ var
   Surface, Cr: Pointer;
 begin
   LoadGraphicsLibraries;
-  Surface := cairo_image_surface_create(0, 1, 1);
+  Surface := cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
   Cr := cairo_create(Surface);
   try
     AppendPath(Cr, Pts, Count);
@@ -526,16 +554,19 @@ begin
   while I < Length(Text) do
   begin
     ByteOffsets[I] := Offset;
-    if (Ord(Text[I + 1]) >= $D800) and (Ord(Text[I + 1]) <= $DBFF) and
-      (I + 1 < Length(Text)) and (Ord(Text[I + 2]) >= $DC00) and (Ord(Text[I + 2]) <= $DFFF) then
+    if (Ord(Text[I + 1]) >= $D800) and (Ord(Text[I + 1]) <= $DBFF) and (I + 1 < Length(Text)) and
+      (Ord(Text[I + 2]) >= $DC00) and (Ord(Text[I + 2]) <= $DFFF) then
     begin
       Inc(I);
       ByteOffsets[I] := Offset;
       Bytes := 4;
     end
-    else if Ord(Text[I + 1]) < $80 then Bytes := 1
-    else if Ord(Text[I + 1]) < $800 then Bytes := 2
-    else Bytes := 3;
+    else if Ord(Text[I + 1]) < $80 then
+      Bytes := 1
+    else if Ord(Text[I + 1]) < $800 then
+      Bytes := 2
+    else
+      Bytes := 3;
     Inc(Offset, Bytes);
     Inc(I);
   end;
@@ -564,8 +595,10 @@ end;
 function CreateText(Text: PChar; var Font: TFmuxFont; Width, Height: Single; Align, Trimming: Integer;
   WordWrap: Boolean): Pointer; cdecl;
 const
+  // TFontWeight (Thin .. UltraBlack) -> PangoWeight.
   Weights: array[0..10] of Integer = (100, 200, 300, 350, 400, 500, 600, 700, 800, 900, 1000);
-  Alignments: array[0..2] of Integer = (1, 0, 2); // FMX: center/leading/trailing; Pango: left/center/right
+  // FMX: center/leading/trailing; Pango: left/center/right.
+  Alignments: array[0..2] of Integer = (PANGO_ALIGN_CENTER, PANGO_ALIGN_LEFT, PANGO_ALIGN_RIGHT);
 var
   T: TCairoText;
   Surface, Cr, Desc, Attrs: Pointer;
@@ -573,7 +606,7 @@ var
 begin
   LoadGraphicsLibraries;
   T := TCairoText.Create;
-  Surface := cairo_image_surface_create(0, 1, 1);
+  Surface := cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
   Cr := cairo_create(Surface);
   try
     try
@@ -583,11 +616,13 @@ begin
       try
         Family := UTF8String(string(Font.Family));
         pango_font_description_set_family(Desc, PAnsiChar(Family));
-        pango_font_description_set_absolute_size(Desc, Max(1, Font.Size) * PangoScale);
+        pango_font_description_set_absolute_size(Desc, Max(1, Font.Size) * PANGO_SCALE);
         pango_font_description_set_weight(Desc, Weights[EnsureRange(Font.Weight, 0, 10)]);
         case Font.Slant of
-          1: pango_font_description_set_style(Desc, 2); // italic
-          2: pango_font_description_set_style(Desc, 1); // oblique
+          1:
+            pango_font_description_set_style(Desc, PANGO_STYLE_ITALIC);
+          2:
+            pango_font_description_set_style(Desc, PANGO_STYLE_OBLIQUE);
         end;
         pango_layout_set_font_description(T.Layout, Desc);
       finally
@@ -596,24 +631,26 @@ begin
       pango_layout_set_text(T.Layout, PAnsiChar(T.Utf8), Length(T.Utf8));
       if WordWrap or (Trimming <> 0) then
       begin
-        pango_layout_set_width(T.Layout, Round(Min(Max(0, Width) * PangoScale, MaxInt)));
-        pango_layout_set_wrap(T.Layout, 2); // word-char fallback for long words
+        pango_layout_set_width(T.Layout, Round(Min(Max(0, Width) * PANGO_SCALE, MaxInt)));
+        pango_layout_set_wrap(T.Layout, PANGO_WRAP_WORD_CHAR); // word-char fallback for long words
         pango_layout_set_alignment(T.Layout, Alignments[EnsureRange(Align, 0, 2)]);
       end
       else
         pango_layout_set_width(T.Layout, -1); // FMX computes the alignment offset itself
       if Trimming <> 0 then
       begin
-        pango_layout_set_ellipsize(T.Layout, 3);
+        pango_layout_set_ellipsize(T.Layout, PANGO_ELLIPSIZE_END);
         if WordWrap then
-          pango_layout_set_height(T.Layout, Round(Min(Max(1, Height) * PangoScale, MaxInt)))
+          pango_layout_set_height(T.Layout, Round(Min(Max(1, Height) * PANGO_SCALE, MaxInt)))
         else
           pango_layout_set_height(T.Layout, -1); // at most one line
       end;
       Attrs := pango_attr_list_new;
       try
-        if Font.Underline then pango_attr_list_insert(Attrs, pango_attr_underline_new(1));
-        if Font.Strikeout then pango_attr_list_insert(Attrs, pango_attr_strikethrough_new(1));
+        if Font.Underline then
+          pango_attr_list_insert(Attrs, pango_attr_underline_new(PANGO_UNDERLINE_SINGLE));
+        if Font.Strikeout then
+          pango_attr_list_insert(Attrs, pango_attr_strikethrough_new(1));
         pango_layout_set_attributes(T.Layout, Attrs);
       finally
         pango_attr_list_unref(Attrs);
@@ -636,7 +673,8 @@ end;
 
 procedure DrawText(Context, Layout: Pointer; X, Y: Single); cdecl;
 begin
-  if Layout = nil then Exit;
+  if Layout = nil then
+    Exit;
   cairo_move_to(C(Context).Cr, X, Y);
   pango_cairo_show_layout(C(Context).Cr, TCairoText(Layout).Layout);
   cairo_new_path(C(Context).Cr);
@@ -647,10 +685,11 @@ var
   Logical: TPangoRectangle;
 begin
   R := TRectF.Empty;
-  if Layout = nil then Exit;
+  if Layout = nil then
+    Exit;
   pango_layout_get_extents(TCairoText(Layout).Layout, nil, @Logical);
-  R := RectF(Logical.X / PangoScale, Logical.Y / PangoScale,
-    (Logical.X + Logical.Width) / PangoScale, (Logical.Y + Logical.Height) / PangoScale);
+  R := RectF(Logical.X / PANGO_SCALE, Logical.Y / PANGO_SCALE, (Logical.X + Logical.Width) / PANGO_SCALE,
+    (Logical.Y + Logical.Height) / PANGO_SCALE);
 end;
 
 function PositionAtPoint(Layout: Pointer; Point: PPointF): Integer; cdecl;
@@ -658,9 +697,10 @@ var
   Index, Trailing: Integer;
 begin
   Result := 0;
-  if (Layout = nil) or (Point = nil) then Exit;
-  pango_layout_xy_to_index(TCairoText(Layout).Layout, Round(Point.X * PangoScale),
-    Round(Point.Y * PangoScale), @Index, @Trailing);
+  if (Layout = nil) or (Point = nil) then
+    Exit;
+  pango_layout_xy_to_index(TCairoText(Layout).Layout, Round(Point.X * PANGO_SCALE), Round(Point.Y * PANGO_SCALE),
+    @Index, @Trailing);
   Result := TCairoText(Layout).CharIndex(Index, Trailing);
 end;
 
@@ -671,14 +711,15 @@ var
   T: TCairoText;
 begin
   Result := 0;
-  if (Layout = nil) or (Region = nil) or (Pos < 0) then Exit;
+  if (Layout = nil) or (Region = nil) or (Pos < 0) then
+    Exit;
   T := TCairoText(Layout);
   Count := Max(0, Min(Count, Length(T.Text) - Pos));
   for I := 0 to Count - 1 do
   begin
     pango_layout_index_to_pos(T.Layout, T.ByteIndex(Pos + I), @R);
-    Region^ := RectF(Min(R.X, R.X + R.Width) / PangoScale, R.Y / PangoScale,
-      Max(R.X, R.X + R.Width) / PangoScale, (R.Y + R.Height) / PangoScale);
+    Region^ := RectF(Min(R.X, R.X + R.Width) / PANGO_SCALE, R.Y / PANGO_SCALE,
+      Max(R.X, R.X + R.Width) / PANGO_SCALE, (R.Y + R.Height) / PANGO_SCALE);
     Inc(Region);
   end;
   Result := Count;
@@ -693,8 +734,9 @@ var
   Kind: TFmuxPathPointKind;
 begin
   Result := 0;
-  if Layout = nil then Exit;
-  Surface := cairo_image_surface_create(0, 1, 1);
+  if Layout = nil then
+    Exit;
+  Surface := cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
   Cr := cairo_create(Surface);
   PathData := nil;
   try
@@ -705,9 +747,12 @@ begin
     begin
       Item := PCairoPathData(PByte(PathData.Data) + I * SizeOf(TCairoPathData));
       case Item.Kind of
-        0: Kind := TFmuxPathPointKind.MoveTo;
-        1: Kind := TFmuxPathPointKind.LineTo;
-        2: Kind := TFmuxPathPointKind.CurveTo;
+        CAIRO_PATH_MOVE_TO:
+          Kind := TFmuxPathPointKind.MoveTo;
+        CAIRO_PATH_LINE_TO:
+          Kind := TFmuxPathPointKind.LineTo;
+        CAIRO_PATH_CURVE_TO:
+          Kind := TFmuxPathPointKind.CurveTo;
       else
         Kind := TFmuxPathPointKind.Close;
       end;
@@ -718,7 +763,7 @@ begin
         begin
           Pts.Kind := Kind;
           Pts.Point := PointF(0, 0);
-          if Item.Kind <> 3 then
+          if Item.Kind <> CAIRO_PATH_CLOSE_PATH then
           begin
             Point := PCairoPathData(PByte(Item) + (J + 1) * SizeOf(TCairoPathData));
             Pts.Point := PointF(Point.X, Point.Y);
@@ -730,7 +775,8 @@ begin
       Inc(I, Item.Length);
     end;
   finally
-    if PathData <> nil then cairo_path_destroy(PathData);
+    if PathData <> nil then
+      cairo_path_destroy(PathData);
     cairo_destroy(Cr);
     cairo_surface_destroy(Surface);
   end;
@@ -748,7 +794,10 @@ var
   Closed: Boolean;
 begin
   LoadGraphicsLibraries;
-  Result := nil; Bits := nil; W := 0; H := 0;
+  Result := nil;
+  Bits := nil;
+  W := 0;
+  H := 0;
   Loader := gdk_pixbuf_loader_new;
   B := nil;
   Err := nil;
@@ -759,14 +808,18 @@ begin
     while Remaining > 0 do
     begin
       N := Min(Remaining, SizeOf(Buffer));
-      if ReadFunc(Param, @Buffer[0], N) <> 0 then Exit;
-      if gdk_pixbuf_loader_write(Loader, @Buffer[0], N, @Err) = 0 then Exit;
+      if ReadFunc(Param, @Buffer[0], N) <> 0 then
+        Exit;
+      if gdk_pixbuf_loader_write(Loader, @Buffer[0], N, @Err) = 0 then
+        Exit;
       Dec(Remaining, N);
     end;
     Closed := True;
-    if gdk_pixbuf_loader_close(Loader, @Err) = 0 then Exit;
+    if gdk_pixbuf_loader_close(Loader, @Err) = 0 then
+      Exit;
     Pixbuf := gdk_pixbuf_loader_get_pixbuf(Loader);
-    if Pixbuf = nil then Exit;
+    if Pixbuf = nil then
+      Exit;
     W := gdk_pixbuf_get_width(Pixbuf);
     H := gdk_pixbuf_get_height(Pixbuf);
     B := FmuxBitmapCreate(W, H, nil);
@@ -779,20 +832,25 @@ begin
       for X := 0 to W - 1 do
       begin
         A := 255;
-        if Channels = 4 then A := PByte(Src + 3)^;
+        if Channels = 4 then
+          A := PByte(Src + 3)^;
         R := (Src^ * A + 127) div 255;
         G := (PByte(Src + 1)^ * A + 127) div 255;
         Blue := (PByte(Src + 2)^ * A + 127) div 255;
         Dst^ := (A shl 24) or (R shl 16) or (G shl 8) or Blue;
-        Inc(Src, Channels); Inc(Dst);
+        Inc(Src, Channels);
+        Inc(Dst);
       end;
     end;
     Bits := B.Data;
     Result := B;
   finally
-    if not Closed then gdk_pixbuf_loader_close(Loader, nil);
-    if (Result = nil) and (B <> nil) then FmuxBitmapDestroy(B);
-    if Err <> nil then g_error_free(Err);
+    if not Closed then
+      gdk_pixbuf_loader_close(Loader, nil);
+    if (Result = nil) and (B <> nil) then
+      FmuxBitmapDestroy(B);
+    if Err <> nil then
+      g_error_free(Err);
     g_object_unref(Loader);
   end;
 end;
@@ -810,11 +868,14 @@ var
 begin
   LoadGraphicsLibraries;
   Result := False;
-  if (Bits = nil) or (W <= 0) or (H <= 0) then Exit;
+  if (Bits = nil) or (W <= 0) or (H <= 0) then
+    Exit;
   FormatName := UTF8String(LowerCase(string(Extension)).TrimLeft(['.']));
-  if FormatName = 'jpg' then FormatName := 'jpeg';
-  Pixbuf := gdk_pixbuf_new(0, 1, 8, W, H);
-  Buffer := nil; Err := nil;
+  if FormatName = 'jpg' then
+    FormatName := 'jpeg';
+  Pixbuf := gdk_pixbuf_new(GDK_COLORSPACE_RGB, 1, 8, W, H);
+  Buffer := nil;
+  Err := nil;
   try
     Stride := gdk_pixbuf_get_rowstride(Pixbuf);
     for Y := 0 to H - 1 do
@@ -823,10 +884,13 @@ begin
       Dst := gdk_pixbuf_get_pixels(Pixbuf) + NativeInt(Y) * Stride;
       for X := 0 to W - 1 do
       begin
-        Color := Src^; A := Color shr 24;
+        Color := Src^;
+        A := Color shr 24;
         if A = 0 then
         begin
-          Dst^ := 0; PByte(Dst + 1)^ := 0; PByte(Dst + 2)^ := 0;
+          Dst^ := 0;
+          PByte(Dst + 1)^ := 0;
+          PByte(Dst + 2)^ := 0;
         end
         else
         begin
@@ -835,21 +899,26 @@ begin
           PByte(Dst + 2)^ := Min(255, ((Color and 255) * 255 + A div 2) div A);
         end;
         PByte(Dst + 3)^ := A;
-        Inc(Src); Inc(Dst, 4);
+        Inc(Src);
+        Inc(Dst, 4);
       end;
     end;
-    if gdk_pixbuf_save_to_bufferv(Pixbuf, @Buffer, @Size, PAnsiChar(FormatName), nil, nil, @Err) = 0 then Exit;
+    if gdk_pixbuf_save_to_bufferv(Pixbuf, @Buffer, @Size, PAnsiChar(FormatName), nil, nil, @Err) = 0 then
+      Exit;
     Offset := 0;
     while Offset < Size do
     begin
       Chunk := Min(NativeUInt(65536), Size - Offset);
-      if WriteFunc(Param, PByte(Buffer) + Offset, Chunk) <> 0 then Exit;
+      if WriteFunc(Param, PByte(Buffer) + Offset, Chunk) <> 0 then
+        Exit;
       Inc(Offset, Chunk);
     end;
     Result := True;
   finally
-    if Err <> nil then g_error_free(Err);
-    if Buffer <> nil then g_free(Buffer);
+    if Err <> nil then
+      g_error_free(Err);
+    if Buffer <> nil then
+      g_free(Buffer);
     g_object_unref(Pixbuf);
   end;
 end;
