@@ -96,6 +96,14 @@ type
 
 var
   HelloForm: THelloForm;
+  /// <summary>Set by Hello.dpr with another canvas than FMX's (FastCanvas, -Define FASTCANVAS): a line about it for
+  /// the log.</summary>
+  HelloCanvasInfo: TFunc<string>;
+  /// <summary>Likewise: writes the frame the canvas presented last in the form's window to a file (the frame dump
+  /// when FMXWayland has none: FMXWAYLAND_DUMP_DIR), and returns a line for the log.</summary>
+  HelloSaveFrame: TFunc<TCommonCustomForm, string, string>;
+  /// <summary>How the frames reach the compositor, for the form's text.</summary>
+  HelloPresentation: string = 'wl_shm';
 
 implementation
 
@@ -285,8 +293,8 @@ begin
   FResizeButton := AddButton(440, 390, 130, 'Resize 760x560', ResizeButtonClick);
   AddButton(580, 390, 110, 'Message box', MessageButtonClick);
 
-  with AddLabel(20, 440, 660, Format('FMXWayland: FMX on Wayland without libfmux and GTK; %s, wl_shm.',
-    [TCanvasManager.DefaultCanvas.ClassName])) do
+  with AddLabel(20, 440, 660, Format('FMXWayland: FMX on Wayland without libfmux and GTK; %s, %s.',
+    [TCanvasManager.DefaultCanvas.ClassName, HelloPresentation])) do
     TextSettings.FontColor := TAlphaColors.Gray;
 
   // File dialogs: the portal's when there is one, FMX's own otherwise.
@@ -322,6 +330,8 @@ begin
   OnDeactivate := FormDeactivate;
   Log('created');
   Log('canvas ' + TCanvasManager.DefaultCanvas.ClassName);
+  if Assigned(HelloCanvasInfo) then
+    Log('canvas info: ' + HelloCanvasInfo());
   LogFonts;
   if FEarlyPopupOnCreate then
   begin
@@ -707,6 +717,7 @@ procedure THelloForm.NativeTimerTimer(Sender: TObject);
 var
   Svc: IWaylandNativeWindowContract;
   Size: TSize;
+  Dir: string;
 begin
   (Sender as TTimer).Enabled := False;
   if TPlatformServices.Current.SupportsPlatformService(IWaylandNativeWindowContract, Svc) then
@@ -717,6 +728,15 @@ begin
   end
   else
     Log('native: no IFMXWaylandNativeWindow service');
+  // A canvas that presents the window itself: FMXWayland has no frame of it to dump, the canvas has.
+  Dir := GetEnvironmentVariable('FMXWAYLAND_DUMP_DIR');
+  if Assigned(HelloSaveFrame) and (Dir <> '') then
+    try
+      Log('canvas frame: ' + HelloSaveFrame(Self, TPath.Combine(Dir, 'FMXWaylandHello-canvas.bmp')));
+    except
+      on E: Exception do
+        Log('canvas frame: ' + E.Message);
+    end;
 end;
 
 procedure THelloForm.SelfTestModalTimer(Sender: TObject);
@@ -989,12 +1009,20 @@ begin
       end;
     9:
       begin
+        // Hidden and shown again: the window is unmapped and mapped again (a canvas that presents itself stops and
+        // starts again).
+        FSelfSecond.Hide;
+        FSelfSecond.Show;
+        Log('selftest: second form hidden and shown again');
+      end;
+    10:
+      begin
+        Log(Format('selftest: second form visible %s', [BoolToStr(FSelfSecond.Visible, True)]));
         FSelfSecond.Free;
         FSelfSecond := nil;
         Log('selftest: second form freed');
+        WindowState := TWindowState.wsMaximized;
       end;
-    10:
-      WindowState := TWindowState.wsMaximized;
     11:
       begin
         Log(Format('selftest: maximized %s %dx%d', [BoolToStr(WindowState = TWindowState.wsMaximized, True),

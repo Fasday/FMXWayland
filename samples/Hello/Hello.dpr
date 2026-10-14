@@ -4,7 +4,9 @@ program Hello;
   coordinates, a timer animation, a second form, a modal form, the clipboard and file dialogs.
 
   Canvas: FMX's Skia raster canvas (libsk4d.so next to the program); with the define NOSKIA FMX's default Linux
-  canvas, cairo and Pango (no libsk4d.so).
+  canvas, cairo and Pango (no libsk4d.so); with the define FASTCANVAS FastCanvas on Vulkan, presenting to the windows'
+  wl_surfaces itself (HelloFastCanvas.pas; FastCanvas's src\Canvas and third_party\pasvulkan\src on the search path:
+  tools\build.ps1 -SearchPath; no libsk4d.so).
 
   Command line:
     --quit-after=N    closes the main form after N seconds (tests: clean exit)
@@ -24,7 +26,9 @@ uses
   System.StartUpCopy,
   FMX.Forms,
   FMX.Types,
-{$IFNDEF NOSKIA}
+{$IF Defined(FASTCANVAS)}
+  HelloFastCanvas in 'HelloFastCanvas.pas',
+{$ELSEIF not Defined(NOSKIA)}
   FMX.Skia,
 {$ENDIF}
   HelloMain in 'HelloMain.pas' {HelloForm},
@@ -32,9 +36,30 @@ uses
 
 var
   TitleBarForm: TTitleBarForm;
+{$IFDEF FASTCANVAS}
+  Reason: string;
+{$ENDIF}
 
 begin
-{$IFNDEF NOSKIA}
+{$IF Defined(FASTCANVAS)}
+  // FastCanvas on Vulkan; FMX's own canvas when there is no Vulkan device it can use.
+  if InstallHelloFastCanvas(Reason) then
+  begin
+    HelloCanvasInfo := HelloFastCanvasInfo;
+    HelloSaveFrame :=
+      function(AForm: TCommonCustomForm; AFileName: string): string
+      begin
+        Result := SaveHelloFastCanvasFrame(AForm, AFileName);
+      end;
+    HelloPresentation := 'Vulkan, VK_KHR_wayland_surface';
+  end
+  else
+    HelloCanvasInfo :=
+      function: string
+      begin
+        Result := 'FastCanvas not installed: ' + Reason;
+      end;
+{$ELSEIF not Defined(NOSKIA)}
   GlobalUseSkia := True;
 {$ENDIF}
   Application.Initialize;

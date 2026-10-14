@@ -27,6 +27,9 @@ function Get-HelloSelfTestChecks([string] $Log, [string] $Prefix, [double] $Scal
     "$($Prefix): combo drop-down (xdg_popup) opens" = $Log -match 'selftest: drop-down open True'
     "$($Prefix): combo drop-down closes" = $Log -match 'selftest: drop-down closed True'
     "$($Prefix): second form shown and freed" = $Log -match 'selftest: second form shown[\s\S]*selftest: second form freed'
+    "$($Prefix): second form hidden and shown again (configured twice)" =
+      ($Log -match 'selftest: second form hidden and shown again[\s\S]*selftest: second form visible True') -and
+      ([regex]::Matches($Log, 'configure "Self-test second form"').Count -ge 2)
     "$($Prefix): maximize" = $Log -match 'selftest: maximized True'
     "$($Prefix): restore to ${Width}x${Height}" = $Log -match "selftest: restored ${Width}x${Height}"
     "$($Prefix): modal loop ended by a timer (mrRetry)" = $Log -match 'selftest: modal result 4'

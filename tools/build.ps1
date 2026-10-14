@@ -113,6 +113,6 @@ if (-not (Test-Path $map) -or (Select-String -Path $map -Pattern 'System.Skia.AP
   Copy-Item (Join-Path $Bds 'Redist\linux64\libsk4d.so') $OutDir -Force
   Write-Host "libsk4d.so -> $OutDir (Skia)"
 } else {
-  Write-Host 'No Skia units linked: no libsk4d.so needed (FMX''s cairo canvas)'
+  Write-Host 'No Skia units linked: no libsk4d.so needed (FMX''s cairo canvas, or a canvas of its own: FastCanvas)'
 }
 Write-Host "OK -> $(Join-Path $OutDir $Name)"

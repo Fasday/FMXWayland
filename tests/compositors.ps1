@@ -41,6 +41,7 @@
 .EXAMPLE
   .\tests\compositors.ps1
   .\tests\compositors.ps1 -Runs gnome:1.5, kwin:1.5
+  .\tests\compositors.ps1 -BuildRoot D:\Work\FMXWayland-build\fastcanvas -Canvas TFastCanvas
 #>
 param(
   [string[]] $Runs = @('weston:1', 'weston:2', 'sway:1', 'sway:2', 'sway:1.5', 'sway-csd:1', 'sway-csd:1.5', 'kwin:1',
@@ -49,7 +50,9 @@ param(
   [string] $Distro = 'Ubuntu-26.04',
   [string] $Config = 'Release',
   # Parts of tests\compositors.sh: selftest, frame-selftest, early, scenario, frame, portal.
-  [string[]] $Parts = @('selftest', 'frame-selftest', 'early', 'scenario', 'frame', 'portal')
+  [string[]] $Parts = @('selftest', 'frame-selftest', 'early', 'scenario', 'frame', 'portal'),
+  # The canvas class the self-test must report (TSkRasterCanvas, TLinuxCanvas, TFastCanvas); '' = not checked.
+  [string] $Canvas = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,6 +118,10 @@ foreach ($run in $Runs) {
     $selfLines = foreach ($k in $self.Keys) {
       if ($noMax -and ($k -match 'maximize|restore')) { "SKIP  $k (no maximize in the window manager's capabilities)" }
       elseif ($self[$k]) { "PASS  $k" } else { "FAIL  $k" }
+    }
+    if ($Canvas) {
+      $selfLines += if ($log -match "\[hello\] canvas $Canvas\b") { "PASS  $($label): self-test: canvas $Canvas" }
+        else { "FAIL  $($label): self-test: canvas $Canvas" }
     }
     $frames = Join-Path $out 'selftest-frames'
     $size = Convert-HelloFrameDump $frames

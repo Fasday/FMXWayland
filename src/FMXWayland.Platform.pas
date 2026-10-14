@@ -247,6 +247,12 @@ type
     function NeedsPaint(const ANow: Int64): Boolean;
     function GetBufferWidth: Integer;
     function GetBufferHeight: Integer;
+    procedure SetExternalPresentation(const AValue: Boolean);
+    /// <summary>The state that goes with the window's size: the viewport's destination (buffer scale 1) or the buffer
+    /// scale, the window geometry and the decorations. Under external presentation it is sent before the presenter
+    /// commits (when the compositor configures the window, before every paint), so that whatever buffer the presenter
+    /// commits next, even a frame of the size before, applies with the state of the configure acknowledged.</summary>
+    procedure ApplySurfaceState;
   protected
     /// <summary>Paint ADirty (logical coordinates) into AFrame; set AFrame.Drawn when the frame was drawn.</summary>
     procedure DoPaint(const AFrame: PWlFrame; const ADirty: TRectF); virtual;
@@ -376,8 +382,12 @@ type
     /// <summary>The window manager's capabilities (xdg_toplevel.wm_capabilities) as bits 1 shl capability
     /// (window_menu 1, maximize 2, fullscreen 3, minimize 4); $FFFFFFFF when it never sent them.</summary>
     property CapabilityBits: Cardinal read FCapabilityBits;
-    /// <summary>Someone else (a GPU canvas through Vulkan WSI) presents to the surface: no wl_shm frames.</summary>
-    property ExternalPresentation: Boolean read FExternalPresentation write FExternalPresentation;
+    /// <summary>Someone else (a GPU canvas through Vulkan WSI) presents to the surface: no wl_shm frames. The
+    /// surface gets a viewport (where the compositor has wp_viewporter) whose destination is the window's logical
+    /// size, so that a buffer of any size the presenter commits (a frame of the size before a resize, of the scale
+    /// before a scale change) is valid and fills the window; the window counts as mapped once the first paint after
+    /// it was shown has returned (the presenter has committed that frame by then).</summary>
+    property ExternalPresentation: Boolean read FExternalPresentation write SetExternalPresentation;
   end;
 
   /// <summary>A data offer (clipboard or drag-and-drop) and its MIME types.</summary>
@@ -2037,8 +2047,10 @@ begin
     end;
   if Buf = nil then
   begin
-    if FDecoBuffers.Count >= 2 then
-      Exit; // both with the compositor: try again later
+    // Both with the compositor: try again later. Under external presentation the presenter's next commit applies the
+    // decorations of a new size with the configure acknowledged: a third buffer then.
+    if (FDecoBuffers.Count >= 3) or ((FDecoBuffers.Count >= 2) and not FExternalPresentation) then
+      Exit;
     Buf := TWlBuffer.Create(FDisplay, BW, BH, WL_SHM_FORMAT_ARGB8888);
     FDecoBuffers.Add(Buf);
   end;
@@ -2529,8 +2541,8 @@ end;
 
 function TWlWindow.CanParentPopups: Boolean;
 begin
-  // Mapped: configured and a frame committed (an external presenter commits its own frames once configured).
-  Result := FVisible and (FXdgSurface <> nil) and (FMapped or (FExternalPresentation and FConfigured));
+  // Mapped: configured and a frame committed (by an external presenter: once the first paint has returned).
+  Result := FVisible and (FXdgSurface <> nil) and FMapped;
 end;
 
 procedure TWlWindow.ParentMapped;
@@ -2582,20 +2594,29 @@ begin
     xdg_surface_destroy(FXdgSurface);
     FXdgSurface := nil;
   end;
-  // Unmaps: a toplevel keeps its role objects and must do the initial commit again when shown.
   wl_surface_attach(FSurface, nil, 0, 0);
   wl_surface_commit(FSurface);
+  // A toplevel's role objects go too (as GTK does), and Show makes new ones: xdg-shell has the unmapped toplevel do
+  // the initial commit again and wait for a configure, but Weston 14 sends none for it (a form hidden and shown
+  // again stayed invisible: no paint without a configure).
+  if FToplevel <> nil then
+    DestroyRole;
   FDisplay.Flush;
 end;
 
 procedure TWlWindow.HandleXdgConfigure(const ASerial: UInt32);
 var
-  WasConfigured, SizeChanged, StateChanged, DecoSwitched, FrameChanged: Boolean;
+  WasConfigured, SizeChanged, StateChanged, DecoSwitched, FrameChanged, ActivationChanged, External: Boolean;
   W, H: Integer;
   NewState: TWlWindowState;
   Ins: TRect;
 begin
-  xdg_surface_ack_configure(FXdgSurface, ASerial);
+  // An external presenter commits from its own thread at any time, maybe a frame painted before this configure; the
+  // compositor checks a maximized or fullscreen toplevel's geometry against the size of the configure acknowledged
+  // last (Weston: invalid_surface_state). Its acknowledgement goes right next to the state of the new size, below.
+  External := FExternalPresentation and FVisible and (FToplevel <> nil);
+  if not External then
+    xdg_surface_ack_configure(FXdgSurface, ASerial);
   if FToplevel <> nil then
     WlLog(TWlLogLevel.Debug, 'configure "%s": %dx%d maximized %s fullscreen %s activated %s (now %dx%d)', [FTitle,
       FPendingWidth, FPendingHeight, BoolToStr(FPendingMaximized, True), BoolToStr(FPendingFullScreen, True),
@@ -2657,23 +2678,40 @@ begin
     FrameChanged := (FPendingStateBits <> FStateBits) or FCapabilitiesChanged;
     FStateBits := FPendingStateBits;
     FCapabilitiesChanged := False;
+    ActivationChanged := FPendingActivated <> FActivated;
+    FActivated := FPendingActivated;
+    if External then
+    begin
+      // Every commit of the presenter must be valid for the configure acknowledged before it: into a maximized or
+      // fullscreen state the geometry, viewport and decorations of the new size go first (until the acknowledgement
+      // the window is not checked), out of it the acknowledgement goes first; both before FMX hears of the change.
+      if FPendingMaximized or FPendingFullScreen then
+      begin
+        ApplySurfaceState;
+        xdg_surface_ack_configure(FXdgSurface, ASerial);
+      end
+      else
+      begin
+        xdg_surface_ack_configure(FXdgSurface, ASerial);
+        ApplySurfaceState;
+      end;
+      FDisplay.Flush;
+    end;
     // The state first: FMX's OnResize of a maximized form sees wsMaximized.
     if StateChanged then
       DoStateChanged(FState);
     if SizeChanged or (FCsd and StateChanged) or DecoSwitched then
       DoResized;
-    if FPendingActivated <> FActivated then
-    begin
-      FActivated := FPendingActivated;
+    if ActivationChanged then
       DoActivate(FActivated);
-    end;
     if FrameChanged then
       DoFrameChanged;
-  end;
+  end
+  else if FExternalPresentation and FVisible then
+    // A popup presented by someone else: its viewport's destination.
+    ApplySurfaceState;
   if not WasConfigured or SizeChanged then
     InvalidateAll;
-  if not WasConfigured and FExternalPresentation then
-    ParentMapped;
 end;
 
 function TWlWindow.NeedsPaint(const ANow: Int64): Boolean;
@@ -2728,38 +2766,37 @@ begin
   end;
   BW := BufferWidth;
   BH := BufferHeight;
-  Buf := nil;
-  if not FExternalPresentation then
-  begin
-    Buf := AcquireBuffer(BW, BH);
-    if Buf = nil then
-      Exit; // all buffers are with the compositor: paint when one comes back
-  end;
   Dirty := FDirty;
-  FDirty := TRectF.Empty;
   FillChar(Frame, SizeOf(Frame), 0);
-  if Buf <> nil then
-  begin
-    Frame.Bits := Buf.Data;
-    Frame.Stride := Buf.Stride;
-  end;
   Frame.Width := BW;
   Frame.Height := BH;
   Frame.Scale := FScale;
+  if FExternalPresentation then
+  begin
+    // The presenter commits from its own thread while FMX paints, or later: the window's state for this size goes
+    // first (the next commit applies it, whichever frame it carries), and the frame has no pixels here.
+    FDirty := TRectF.Empty;
+    ApplySurfaceState;
+    DoPaint(@Frame, Dirty);
+    if FVisible and not FMapped then
+    begin
+      // The presenter has committed the first frame by now (FastCanvas waits for it before FMX's paint returns).
+      FMapped := True;
+      ParentMapped;
+    end;
+    Exit;
+  end;
+  Buf := AcquireBuffer(BW, BH);
+  if Buf = nil then
+    Exit; // all buffers are with the compositor: paint when one comes back
+  FDirty := TRectF.Empty;
+  Frame.Bits := Buf.Data;
+  Frame.Stride := Buf.Stride;
   DoPaint(@Frame, Dirty);
   if not FVisible then
     Exit;
-  // The scale state is double-buffered: with an external presenter it applies at its next commit.
-  if FViewport <> nil then
-    wp_viewport_set_destination(FViewport, FWidth, FHeight)
-  else if (FIntScale <> FLastBufferScale) and (wl_surface_get_version(FSurface) >= 3) then
-  begin
-    wl_surface_set_buffer_scale(FSurface, FIntScale);
-    FLastBufferScale := FIntScale;
-  end;
-  UpdateGeometry;
-  PaintDecorations;
-  if (Buf = nil) or not Frame.Drawn then
+  ApplySurfaceState;
+  if not Frame.Drawn then
     Exit;
   wl_surface_attach(FSurface, Buf.Buffer, 0, 0);
   if FFullDamage then
@@ -2815,6 +2852,41 @@ end;
 procedure TWlWindow.InvalidateAll;
 begin
   FDirty := RectF(0, 0, FWidth, FHeight);
+end;
+
+procedure TWlWindow.SetExternalPresentation(const AValue: Boolean);
+begin
+  if AValue = FExternalPresentation then
+    Exit;
+  FExternalPresentation := AValue;
+  WlLog(TWlLogLevel.Debug, 'external presentation of "%s": %s', [FTitle, BoolToStr(AValue, True)]);
+  // A viewport maps any buffer to the window's logical size: the presenter's buffers need not match the buffer
+  // scale (an odd size at scale 2 would be a protocol error) nor the size of the configure.
+  if AValue and (FViewport = nil) and (FDisplay.FViewporter <> nil) then
+    FViewport := wp_viewporter_get_viewport(FDisplay.FViewporter, FSurface);
+  // The next paint is the new presenter's (or FMXWayland's again), all of it.
+  FFullDamage := True;
+  InvalidateAll;
+end;
+
+procedure TWlWindow.ApplySurfaceState;
+begin
+  if FViewport <> nil then
+  begin
+    if (FLastBufferScale <> 1) and (wl_surface_get_version(FSurface) >= 3) then
+    begin
+      wl_surface_set_buffer_scale(FSurface, 1);
+      FLastBufferScale := 1;
+    end;
+    wp_viewport_set_destination(FViewport, FWidth, FHeight);
+  end
+  else if (FIntScale <> FLastBufferScale) and (wl_surface_get_version(FSurface) >= 3) then
+  begin
+    wl_surface_set_buffer_scale(FSurface, FIntScale);
+    FLastBufferScale := FIntScale;
+  end;
+  UpdateGeometry;
+  PaintDecorations;
 end;
 
 procedure TWlWindow.SetBounds(const AX, AY: Single; const AWidth, AHeight: Integer);
