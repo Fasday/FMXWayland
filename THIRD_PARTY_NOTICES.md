@@ -16,6 +16,7 @@ The XML files in `protocols/` are copied unchanged from the Wayland projects (Ub
 | `fractional-scale-v1.xml` | wayland-protocols, staging |
 | `cursor-shape-v1.xml` | wayland-protocols, staging |
 | `xdg-activation-v1.xml` | wayland-protocols, staging |
+| `xdg-foreign-unstable-v2.xml` | wayland-protocols, unstable |
 
 They are under the MIT license (the "Expat"/X11 variant); each file carries its copyright notice and the license text
 in its `<copyright>` element. The Pascal units in `src/Protocols/` are generated from them by `tools/gen-wayland.ps1`
