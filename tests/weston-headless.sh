@@ -23,7 +23,7 @@ wayland-info > "$OUT/wayland-info.txt" 2>&1
 cd "$(dirname "$PROG")"
 FMXWAYLAND_LOG=2 FMXWAYLAND_DUMP_DIR="$OUT" timeout 60 "$PROG" "$@" > "$OUT/program.log" 2>&1 &
 PPID2=$!
-sleep "${SHOT_AFTER:-4}"
+sleep "${SHOT_AFTER:-3}"
 (cd "$OUT" && timeout 10 weston-screenshooter > "$OUT/screenshooter.log" 2>&1)
 wait $PPID2
 echo "exit=$?" >> "$OUT/program.log"

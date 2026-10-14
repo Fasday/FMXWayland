@@ -384,6 +384,7 @@ type
     FDragOffer: TWlDataOffer;
     FOwnSource: Pwl_data_source;
     FOwnText: UTF8String;
+    FOwnLocal: Boolean;
     procedure HandleGlobal(const AName: UInt32; const AInterface: string; const AVersion: UInt32);
     procedure HandleGlobalRemove(const AName: UInt32);
     procedure HandleCapabilities(const ACapabilities: UInt32);
@@ -3327,7 +3328,7 @@ function TWlDisplay.ClipboardHasText: Boolean;
 var
   M: string;
 begin
-  if FOwnSource <> nil then
+  if (FOwnSource <> nil) or FOwnLocal then
     Exit(True);
   if FSelection = nil then
     Exit(False);
@@ -3399,7 +3400,7 @@ var
   M: string;
   Data: TBytes;
 begin
-  if FOwnSource <> nil then
+  if (FOwnSource <> nil) or FOwnLocal then
     Exit(UTF8ToString(FOwnText));
   Result := '';
   if FSelection = nil then
@@ -3425,9 +3426,13 @@ var
 begin
   if (FDataDeviceManager = nil) or (FDataDevice = nil) then
   begin
-    WlLogOnce('clipboard', 'the compositor offers no wl_data_device_manager: no clipboard');
+    // No seat or no data device manager: a clipboard inside the process only.
+    WlLogOnce('clipboard', 'no wl_data_device (no seat?): the clipboard works inside this program only');
+    FOwnLocal := True;
+    FOwnText := UTF8String(AText);
     Exit;
   end;
+  FOwnLocal := False;
   WlLog(TWlLogLevel.Debug, 'clipboard: set %d characters (serial %d)', [Length(AText), FLastInputSerial]);
   Src := wl_data_device_manager_create_data_source(FDataDeviceManager);
   wl_data_source_add_listener(Src, @CDataSourceListener, Self);

@@ -43,7 +43,12 @@ type
     FAnimTimer: TTimer;
     FQuitTimer: TTimer;
     FSecondCount: Integer;
+    FSelfTimer: TTimer;
+    FSelfStep: Integer;
+    FSelfSecond: TForm;
     procedure Log(const AText: string);
+    procedure SelfTestStep(Sender: TObject);
+    procedure SelfTestModalTimer(Sender: TObject);
     function AddLabel(const AX, AY, AWidth: Single; const AText: string): TLabel;
     function AddButton(const AX, AY, AWidth: Single; const AText: string; const AOnClick: TNotifyEvent): TButton;
     procedure ClickButtonClick(Sender: TObject);
@@ -135,7 +140,15 @@ begin
     if S.StartsWith('--quit-after=') then
       QuitAfter := StrToIntDef(S.Substring(Length('--quit-after=')), 0)
     else if S = '--verbose' then
+      FVerbose := True
+    else if S = '--selftest' then
+    begin
       FVerbose := True;
+      FSelfTimer := TTimer.Create(Self);
+      FSelfTimer.Interval := 600;
+      FSelfTimer.OnTimer := SelfTestStep;
+      FSelfTimer.Enabled := True;
+    end;
   end;
 
   FTitle := TText.Create(Self);
@@ -491,6 +504,113 @@ begin
   end
   else
     Log('native: no IFMXWaylandNativeWindow service');
+end;
+
+procedure THelloForm.SelfTestModalTimer(Sender: TObject);
+begin
+  // Runs inside the modal loop of ShowModal: timers keep working there.
+  (Sender as TTimer).Enabled := False;
+  TForm(TComponent(Sender).Owner).ModalResult := mrRetry;
+end;
+
+/// --selftest: steps without user input (threads, clipboard, popup, second form, maximize, modal loop); each step
+/// writes "selftest: ..." to the log; tests\weston-headless.ps1 checks them.
+procedure THelloForm.SelfTestStep(Sender: TObject);
+var
+  Svc: IFMXClipboardService;
+  V: TValue;
+  F: TForm;
+  T: TTimer;
+  R: TModalResult;
+begin
+  Inc(FSelfStep);
+  case FSelfStep of
+    1:
+      TThread.CreateAnonymousThread(
+        procedure
+        begin
+          TThread.Synchronize(nil,
+            procedure
+            begin
+              Log(Format('selftest: synchronize from a thread, on the main thread %s',
+                [BoolToStr(TThread.Current.ThreadID = MainThreadID, True)]));
+            end);
+          TThread.Queue(nil,
+            procedure
+            begin
+              Log(Format('selftest: queue from a thread, on the main thread %s',
+                [BoolToStr(TThread.Current.ThreadID = MainThreadID, True)]));
+            end);
+        end).Start;
+    2:
+      if TPlatformServices.Current.SupportsPlatformService(IFMXClipboardService, Svc) then
+      begin
+        Svc.SetClipboard('selftest clipboard ' + #$2713);
+        V := Svc.GetClipboard;
+        Log('selftest: clipboard "' + V.ToString + '"');
+      end;
+    3:
+      begin
+        FCombo.DropDown;
+        Log(Format('selftest: drop-down open %s', [BoolToStr(FCombo.DroppedDown, True)]));
+      end;
+    7:
+      begin
+        FCombo.DropDown;
+        Log(Format('selftest: drop-down closed %s', [BoolToStr(not FCombo.DroppedDown, True)]));
+      end;
+    8:
+      begin
+        Inc(FSecondCount);
+        FSelfSecond := TForm.CreateNew(Application);
+        FSelfSecond.Caption := 'Self-test second form';
+        FSelfSecond.ClientWidth := 300;
+        FSelfSecond.ClientHeight := 120;
+        FSelfSecond.Show;
+        Log('selftest: second form shown');
+      end;
+    9:
+      begin
+        FSelfSecond.Free;
+        FSelfSecond := nil;
+        Log('selftest: second form freed');
+      end;
+    10:
+      WindowState := TWindowState.wsMaximized;
+    11:
+      begin
+        Log(Format('selftest: maximized %s %dx%d', [BoolToStr(WindowState = TWindowState.wsMaximized, True),
+          ClientWidth, ClientHeight]));
+        WindowState := TWindowState.wsNormal;
+      end;
+    12:
+      Log(Format('selftest: restored %dx%d', [ClientWidth, ClientHeight]));
+    13:
+      begin
+        FSelfTimer.Enabled := False;
+        F := TForm.CreateNew(nil);
+        try
+          F.Caption := 'Self-test modal form';
+          F.ClientWidth := 260;
+          F.ClientHeight := 100;
+          T := TTimer.Create(F);
+          T.Interval := 700;
+          T.OnTimer := SelfTestModalTimer;
+          T.Enabled := True;
+          R := F.ShowModal;
+          Log(Format('selftest: modal result %d', [R]));
+        finally
+          F.Free;
+        end;
+        FSelfTimer.Enabled := True;
+      end;
+    14:
+      begin
+        FSelfTimer.Enabled := False;
+        Log('selftest: done');
+        Close;
+      end;
+  end;
 end;
 
 procedure THelloForm.QuitTimerTimer(Sender: TObject);

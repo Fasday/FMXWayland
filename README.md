@@ -135,7 +135,7 @@ Evidence of the last runs: all checks of both passed (WSLg on Windows 11 with Ub
 |---|---|
 | ![combo box popup](docs/screenshots/hello-combo-popup.png) | ![message box](docs/screenshots/hello-message-dialog.png) ![modal form](docs/screenshots/hello-modal.png) |
 
-Headless Weston, output scale 2 (crisp 2x rendering, client-side decorations at scale 2):
+Headless Weston, output scale 2 (2x rendering, client-side decorations, the combo box drop-down as an xdg_popup):
 
 ![Weston at scale 2](docs/screenshots/weston-headless-scale2.png)
 
