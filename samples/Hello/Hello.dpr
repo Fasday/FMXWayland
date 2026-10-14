@@ -14,7 +14,9 @@ program Hello;
                      opens the combo box drop-down before the window's first configure (a timer of 1 ms), while it
                      paints its first frame, or in FormCreate before it is shown (tests: popups of unmapped parents)
     --own-titlebar   instead of the main form, a form that draws its own title bar through FMXWayland's
-                     IFMXWaylandWindowFrame service (HelloTitleBar.pas; with --selftest its own steps) }
+                     IFMXWaylandWindowFrame service (HelloTitleBar.pas; with --selftest its own steps;
+                     --size=WxH its Width and Height, 720x460 by default; --size-after=WxH set again once the
+                     frame is attached, before the show) }
 
 uses
   System.StartUpCopy,

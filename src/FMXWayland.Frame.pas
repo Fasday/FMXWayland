@@ -70,8 +70,9 @@ type
     /// <summary>False: no decorations for the window, neither FMXWayland's client-side title bar and borders nor
     /// the compositor's (xdg-decoration mode client_side); the surface is all client area and the window geometry,
     /// FMX's window rectangle equals the client rectangle. Kept for the window (configures and hide/show do not
-    /// change it). True (default): the platform's decorations again. A window on the screen keeps its outer size.
-    /// </summary>
+    /// change it). True (default): the platform's decorations again. Before the window's first show only the choice
+    /// is recorded: the form's Width and Height (what the program set) stay and become the client area at the show.
+    /// A window shown once keeps its outer size; FMX gets its new bounds.</summary>
     procedure SetDecorated(const AHandle: TWindowHandle; const AValue: Boolean);
     /// <summary>True when the window has decorations now (FMXWayland's or the compositor's).</summary>
     function GetDecorated(const AHandle: TWindowHandle): Boolean;

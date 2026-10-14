@@ -504,7 +504,7 @@ t settle
 [ "$KIND" = gnome ] && t state
 check "own title bar: decorations off (SetDecorated False)" wait_log 'frame: decorated False' 1 1
 fgeo
-check "own title bar: window geometry = client area 640x420" [ "$GW $GH" = "640 420" ]
+check "own title bar: window geometry = the program's size 720x460" [ "$GW $GH" = "720 460" ]
 t frame "$FT"; set -- $ANS
 checkd "own title bar: no title bar of the compositor (its frame = window geometry)" "frame $3x$4" \
   [ "$3 $4" = "$GW $GH" ]

@@ -121,6 +121,50 @@ function Get-ColorCount([string] $Path, [int] $Rgb, [int] $Tolerance = 8) {
   [FmxwPixels]::Count($Path, $Rgb, $Tolerance)
 }
 
+# Checks of the log of Hello --own-titlebar --selftest (IFMXWaylandWindowFrame without input) whose form the program
+# sized $Width x $Height before the frame was attached and before the first show: it must open at that size (FMX's
+# form and the client area, the buffer at the scale). $Comp: the compositor (KWin and sway decorate themselves and keep
+# the outer size when the decorations come or go: the client size after that is theirs; Weston and GNOME Shell get
+# FMXWayland's title bar back, 4 + 4 and 30 + 4 pixels).
+function Get-HelloOwnTitleBarChecks([string] $Log, [string] $Prefix, [int] $Width, [int] $Height, [double] $Scale = 1,
+  [string] $Comp = 'weston') {
+  $ssd = $Comp -in 'sway', 'sway-csd', 'kwin', 'kwin-virtual'
+  $size = "${Width}x$Height"
+  $onSize = if ($ssd) { '\d+x\d+' } else { "$($Width - 8)x$($Height - 34)" }
+  $offSize = if ($ssd) { '\d+x\d+' } else { $size }
+  $bw = [int][Math]::Round($Width * $Scale)
+  $bh = [int][Math]::Round($Height * $Scale)
+  $s = $Scale.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+  $bigger = "$($Width + 40)x$($Height + 20)"
+  [ordered]@{
+    "$($Prefix): service found" = $Log -match 'frame: service found'
+    "$($Prefix): decorations off" = $Log -match 'frame: decorated False'
+    "$($Prefix): opens at the program's size $size (FMX's form and the client area)" =
+      ($Log -match "shown: form $size, client $size") -and
+      ($Log -match "selftest: decorated False, form $size, client $size")
+    "$($Prefix): buffer ${bw}x$bh at scale $s" = $Log -match "selftest: buffer ${bw}x$bh, scale $s"
+    "$($Prefix): listener told at once and after the configure" =
+      ($Log -match 'frame: states \$0 \(-\) capabilities \$FFFFFFFF \(unknown\)') -and
+      ($Log -match 'frame: states \$[0-9A-F]+ \([^)]*\) capabilities \$[0-9A-F]+ \((?!unknown)')
+    "$($Prefix): BeginMove, BeginResize, ShowWindowMenu False without a press" =
+      $Log -match 'selftest: without a press: BeginMove False, BeginResize False, ShowWindowMenu False'
+    "$($Prefix): drop-down (xdg_popup of an undecorated window) placed where asked" =
+      ($Log -match 'selftest: drop-down open True') -and
+      ($Log -match 'popup configure (-?\d+),(-?\d+) \d+x\d+ \(asked \1,\2 ')
+    "$($Prefix): SetMaximized True: maximized state" =
+      $Log -match 'frame: states \$[0-9A-F]+ \([^)]*maximized[\s\S]*selftest: maximized True \d+x\d+'
+    "$($Prefix): SetMaximized False: restored to $size" = $Log -match "selftest: restored True $size"
+    "$($Prefix): SetDecorated True: decorations back" =
+      $Log -match "selftest: decorations on: decorated True, client $onSize"
+    "$($Prefix): SetDecorated False again" = $Log -match "selftest: decorations off: decorated False, client $offSize"
+    "$($Prefix): size from code once shown: the client area" =
+      ($Log -match "selftest: size from code: form $bigger, client $bigger") -and
+      ($Log -match "selftest: size from code again: form $size, client $size")
+    "$($Prefix): self-test done, clean exit" = ($Log -match 'selftest: done') -and ($Log -match 'exit=0')
+    "$($Prefix): no protocol errors" = $Log -notmatch 'protocol error|FMXWayland: error'
+  }
+}
+
 # Checks of a screenshot of Hello --own-titlebar: its caption (active or inactive blue) is there, and no title bar of
 # FMXWayland's (its light gray, active or inactive) right above it. Returns @(passed, detail).
 function Test-HelloOwnTitleBarShot([string] $Path) {
@@ -152,7 +196,8 @@ function Get-HelloEarlyPopupChecks([string] $Log, [string] $Shot, [string] $Pref
   $closedByFmx = $Activates -and ($Log -match '\[hello\] form activated') -and ($item -lt 100)
   [ordered]@{
     "$($Prefix): drop-down opened" = $Log -match 'early popup: drop-down open True'
-    "$($Prefix): an xdg_popup of the main window, made once that is mapped" = ($Log -notmatch 'shown as a toplevel') -and
+    "$($Prefix): an xdg_popup of the main window, made once that is mapped" =
+      ($Log -notmatch 'shown as a toplevel') -and
       (($Log -match 'the popup is made now') -or (($Log -match 'popup configure') -and ($Log -notmatch 'popup waits')))
     "$($Prefix): not dismissed by the compositor" = $Log -notmatch 'popup dismissed'
     "$($Prefix): main window on the screen ($blue title pixels)" = $blue -gt 300
@@ -168,7 +213,8 @@ function Get-HelloEarlyPopupChecks([string] $Log, [string] $Shot, [string] $Pref
 function Get-HelloFontChecks([string] $Log, [string] $Prefix, [string] $Family, [string] $Size = '12.0',
   [switch] $Distinct) {
   $checks = [ordered]@{
-    "$($Prefix): TFont default family `"$Family`" $Size" = $Log -match "font: default `"$([regex]::Escape($Family))`" $Size"
+    "$($Prefix): TFont default family `"$Family`" $Size" =
+      $Log -match "font: default `"$([regex]::Escape($Family))`" $Size"
     "$($Prefix): styled label in `"$Family`"" = $Log -match "font: label `"$([regex]::Escape($Family))`""
   }
   if ($Distinct) {
@@ -190,4 +236,4 @@ function Write-Checks($Checks) {
 }
 
 Export-ModuleMember -Function ConvertTo-WslPath, Get-HelloSelfTestChecks, Convert-HelloFrameDump, Write-Checks,
-  Get-ColorCount, Get-HelloEarlyPopupChecks, Get-HelloFontChecks, Test-HelloOwnTitleBarShot
+  Get-ColorCount, Get-HelloEarlyPopupChecks, Get-HelloFontChecks, Test-HelloOwnTitleBarShot, Get-HelloOwnTitleBarChecks

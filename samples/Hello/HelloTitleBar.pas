@@ -5,8 +5,10 @@ unit HelloTitleBar;
   that does not depend on FMXWayland declares it. The platform's decorations are off; the blue caption moves the
   window (press and drag), maximizes or restores it (double click) and shows the compositor's window menu (right
   click); its buttons minimize, maximize/restore and close; thin grips at the edges resize the window. The states the
-  compositor reports (activated, maximized, tiled, ...) show in a label and in the log. With --selftest it runs steps
-  without input (tests\compositors.sh). }
+  compositor reports (activated, maximized, tiled, ...) show in a label and in the log. As a program would, it sets
+  the form's Width and Height (720 x 460, or --size=WxH) in its constructor and only then turns the decorations off,
+  before the window is shown: it opens at that size, all of it client area. With --selftest it runs steps without
+  input (tests\compositors.sh). }
 
 interface
 
@@ -90,6 +92,8 @@ type
     FSelfTimer: TTimer;
     FSelfStep: Integer;
     FQuitTimer: TTimer;
+    FProgramWidth: Integer;
+    FProgramHeight: Integer;
     procedure Log(const AText: string);
     function AddButton(const AGlyph: string; const AOnClick: TNotifyEvent; out APath: TPath): TRectangle;
     procedure ButtonEnter(Sender: TObject);
@@ -105,6 +109,7 @@ type
     procedure FormActivated(Sender: TObject);
     procedure FormDeactivated(Sender: TObject);
     procedure FormDestroyed(Sender: TObject);
+    procedure FormShown(Sender: TObject);
     procedure QuitTimerTimer(Sender: TObject);
     procedure PlaceGrips;
     procedure SelfTestStep(Sender: TObject);
@@ -135,8 +140,21 @@ const
   CGripCorner = 14;
   CCaptionActive = $FF2B579A;
   CCaptionInactive = $FF8AA2C8;
+  // The form's Width and Height unless --size=WxH says otherwise (not FMX's default 640 x 480).
+  CDefaultWidth = 720;
+  CDefaultHeight = 460;
 
 type
+  /// The contract of FMXWayland.Native.IFMXWaylandNativeWindow (as in HelloMain): the window's buffer size.
+  INativeWindowContract = interface
+    ['{B04A2FBC-1322-42BC-98A6-D526A7854F2C}']
+    function GetWaylandDisplay: Pointer;
+    function GetWaylandSurface(const AHandle: TWindowHandle): Pointer;
+    function GetBufferSize(const AHandle: TWindowHandle): TSize;
+    function GetScale(const AHandle: TWindowHandle): Single;
+    procedure SetExternalPresentation(const AHandle: TWindowHandle; const AValue: Boolean);
+  end;
+
   TTitleBarListener = class(TInterfacedObject, IFMXWaylandWindowFrameListener)
   private
     [Unsafe] FForm: TTitleBarForm;
@@ -297,6 +315,20 @@ begin
   OnActivate := FormActivated;
   OnDeactivate := FormDeactivated;
   OnDestroy := FormDestroyed;
+  OnShow := FormShown;
+  // The program's size, set before the frame is attached and before the window is shown (FMX keeps it until the
+  // first show): without decorations it is the client area.
+  FProgramWidth := CDefaultWidth;
+  FProgramHeight := CDefaultHeight;
+  for I := 1 to ParamCount do
+    if ParamStr(I).StartsWith('--size=') then
+    begin
+      S := ParamStr(I).Substring(Length('--size='));
+      FProgramWidth := StrToIntDef(S.Split(['x'])[0], CDefaultWidth);
+      FProgramHeight := StrToIntDef(S.Split(['x'])[1], CDefaultHeight);
+    end;
+  Width := FProgramWidth;
+  Height := FProgramHeight;
   if TPlatformServices.Current.SupportsPlatformService(IFMXWaylandWindowFrame, FFrame) then
   begin
     Log('frame: service found');
@@ -310,9 +342,17 @@ begin
   end
   else
     Log('frame: no IFMXWaylandWindowFrame service');
-  // The client size after the decorations are off.
-  ClientWidth := 640;
-  ClientHeight := 420;
+  // --size-after=WxH: the program sets the size again once the frame is attached (still before the show).
+  for I := 1 to ParamCount do
+    if ParamStr(I).StartsWith('--size-after=') then
+    begin
+      S := ParamStr(I).Substring(Length('--size-after='));
+      FProgramWidth := StrToIntDef(S.Split(['x'])[0], FProgramWidth);
+      FProgramHeight := StrToIntDef(S.Split(['x'])[1], FProgramHeight);
+      Width := FProgramWidth;
+      Height := FProgramHeight;
+    end;
+  Log(Format('form %dx%d before the first show', [Width, Height]));
   PlaceGrips;
 
   QuitAfter := 0;
@@ -336,7 +376,7 @@ begin
     FQuitTimer.OnTimer := QuitTimerTimer;
     FQuitTimer.Enabled := True;
   end;
-  Log('created ' + SizeText);
+  Log('created');
 end;
 
 destructor TTitleBarForm.Destroy;
@@ -573,6 +613,13 @@ begin
   Log('destroyed');
 end;
 
+procedure TTitleBarForm.FormShown(Sender: TObject);
+begin
+  // FMX's window rectangle (Width, Height) and the client area: the program's size, without decorations both.
+  Log(Format('shown: form %dx%d, client %s (the program set %dx%d)', [Width, Height, SizeText, FProgramWidth,
+    FProgramHeight]));
+end;
+
 procedure TTitleBarForm.QuitTimerTimer(Sender: TObject);
 begin
   FQuitTimer.Enabled := False;
@@ -582,6 +629,9 @@ end;
 
 /// --selftest: the service without input (where no input can be injected, as on Weston).
 procedure TTitleBarForm.SelfTestStep(Sender: TObject);
+var
+  Native: INativeWindowContract;
+  Size: TSize;
 begin
   if FFrame = nil then
   begin
@@ -594,8 +644,8 @@ begin
   case FSelfStep of
     1:
       begin
-        Log(Format('selftest: decorated %s, client %s, states (%s), capabilities (%s)',
-          [BoolToStr(FFrame.GetDecorated(Handle), True), SizeText, StatesText(FFrame.GetStates(Handle)),
+        Log(Format('selftest: decorated %s, form %dx%d, client %s, states (%s), capabilities (%s)',
+          [BoolToStr(FFrame.GetDecorated(Handle), True), Width, Height, SizeText, StatesText(FFrame.GetStates(Handle)),
           CapsText(FFrame.GetCapabilities(Handle))]));
         // No press: nothing to start.
         Log(Format('selftest: without a press: BeginMove %s, BeginResize %s, ShowWindowMenu %s',
@@ -606,6 +656,13 @@ begin
       begin
         FCombo.DropDown;
         Log(Format('selftest: drop-down open %s', [BoolToStr(FCombo.DroppedDown, True)]));
+      end;
+    3:
+      if TPlatformServices.Current.SupportsPlatformService(INativeWindowContract, Native) then
+      begin
+        Size := Native.GetBufferSize(Handle);
+        Log(Format('selftest: buffer %dx%d, scale %s', [Size.cx, Size.cy, FormatFloat('0.00', Native.GetScale(Handle),
+          TFormatSettings.Invariant)]));
       end;
     6:
       begin
@@ -637,9 +694,22 @@ begin
         Log(Format('selftest: decorations off: decorated %s, client %s', [BoolToStr(FFrame.GetDecorated(Handle),
           True), SizeText]));
       end;
+    13:
+      begin
+        // The size from code once shown: no decorations, so the form's size is the client area.
+        Width := FProgramWidth + 40;
+        Height := FProgramHeight + 20;
+        Log(Format('selftest: size from code: form %dx%d, client %s', [Width, Height, SizeText]));
+      end;
     14:
       begin
+        Width := FProgramWidth;
+        Height := FProgramHeight;
+      end;
+    15:
+      begin
         FSelfTimer.Enabled := False;
+        Log(Format('selftest: size from code again: form %dx%d, client %s', [Width, Height, SizeText]));
         Log('selftest: done');
         Close;
       end;

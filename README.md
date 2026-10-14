@@ -297,7 +297,9 @@ area is 692x506 there). Popups are placed where asked on all of them (`popup con
 log). With the window frame service: GNOME Shell put a maximized window that a double click on the program's caption
 restored at the top left corner (under its top bar) when the first click had started a move; moves now start on the
 drag. sway and KWin keep the outer size of a window whose decorations come or go; FMX now realigns when only the
-client area changes size. A popup made before its parent was mapped is made once the parent is (FMR Ribbon saw both
+client area changes size. `SetDecorated` before the first show reported the window's provisional size to FMX and so
+replaced the size the program had given the form (FMR Ribbon's RibbonBasic opened at 632x446 instead of 1180x640);
+it only records the choice then now. A popup made before its parent was mapped is made once the parent is (FMR Ribbon saw both
 windows stay invisible on Weston that way; in these runs Weston showed both even before the fix, the protocol
 requires the order).
 
@@ -401,7 +403,7 @@ do nothing and return False/0. Main thread only.
 
 | Method | What FMXWayland does |
 |---|---|
-| `SetDecorated(H, False)` | No decorations at all: the client-side title bar (subsurface) goes, and where the compositor has xdg-decoration it is asked for `client_side` (KWin and sway draw none then). Kept for the window: configures, the compositor's decoration answers and hide/show do not bring them back. The window geometry is the surface (`set_window_geometry(0, 0, w, h)`), `DecorationInsets` are 0, FMX's window rectangle is the client rectangle; FMX gets the new bounds and realigns. A window on the screen keeps its outer size and place (the client area takes the room of the decorations; a maximized window must keep the configured size), one not configured yet keeps its client size. `True`: the platform's choice again (`server_side` asked, or its own title bar). |
+| `SetDecorated(H, False)` | No decorations at all: the client-side title bar (subsurface) goes, and where the compositor has xdg-decoration it is asked for `client_side` (KWin and sway draw none then). Kept for the window: configures, the compositor's decoration answers and hide/show do not bring them back. The window geometry is the surface (`set_window_geometry(0, 0, w, h)`), `DecorationInsets` are 0, FMX's window rectangle is the client rectangle. **Before the window's first show** (a form's constructor, `FormCreate`, FMR's frame attaching to a new form) only the choice is recorded: nothing is reported to FMX and the window's size is not touched, so the `Width`/`Height` the program gave the form (before or after the call) stay and become the client area when the form is shown (FMX keeps a form's size to itself until its first show and sets it then). **Once the window has been shown** it keeps its outer size and place (the client area takes the room of the decorations; a maximized window must keep the configured size) and FMX gets the new bounds and realigns; a hidden window keeps its client size. `True`: the platform's choice again (`server_side` asked, or its own title bar), with the same rules. |
 | `GetDecorated(H)` | True while the window has FMXWayland's title bar, or the compositor's (asked for and not refused). |
 | `BeginMove(H)` | True when the latest pointer button press on any surface of the window (its content or its title bar) is still held. The move itself (`xdg_toplevel.move` with that press's serial) starts when the pointer has been dragged 4 pixels with the button held, as GTK does: a click or a double click on the caption stays a click (no button release lost to the compositor; GNOME Shell put a maximized window restored right after a move that started at the first click of a double click to the top left corner). False without a held press, for popups. |
 | `BeginResize(H, Edges)` | `xdg_toplevel.resize` with the held press's serial at once; False without one or for an edge value that is not one of xdg-shell's (a protocol error otherwise). |
@@ -419,7 +421,10 @@ mouse capture go.
 `samples\Hello --own-titlebar` uses the service through its own copy of the declaration (`HelloTitleBar.pas`): a
 blue caption that moves the window, maximizes and restores it on a double click and shows the window menu on a right
 click, minimize/maximize/close buttons (those the window manager offers), 5 pixel resize grips at the edges and the
-states from the listener. What the compositors do with it ([Compositors](#compositors), `tests\compositors.ps1`):
+states from the listener. Like a program, it sets the form's `Width`/`Height` in its constructor (720x460,
+`--size=WxH`; `--size-after=WxH` sets it again after the frame is attached) and turns the decorations off before the
+first show; the tests check that the window opens at that size (FMX's form, the client area, the buffer at the
+scale) and follows sizes set from code later. What the compositors do with it ([Compositors](#compositors), `tests\compositors.ps1`):
 
 | | Weston 14 | sway 1.11 | KWin 6.6 | GNOME Shell 50 |
 |---|---|---|---|---|

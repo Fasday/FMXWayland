@@ -55,33 +55,13 @@ function Get-ResultLines($Checks) {
   foreach ($k in $Checks.Keys) { if ($Checks[$k]) { "PASS  $k" } else { "FAIL  $k" } }
 }
 
-# Hello --own-titlebar --selftest (IFMXWaylandWindowFrame without input): its log and the screenshot taken while the
-# undecorated window had its drop-down open.
-function Get-FrameSelfTestLines([string] $Out, [string] $Label, [string] $Comp) {
+# Hello --own-titlebar --selftest (IFMXWaylandWindowFrame without input; the program sizes the form 720x460 before it
+# turns the decorations off and before the first show): its log and the screenshot taken while the undecorated window
+# had its drop-down open.
+function Get-FrameSelfTestLines([string] $Out, [string] $Label, [string] $Comp, [double] $Scale) {
   $log = "$(Get-Content (Join-Path $Out 'frame-selftest.log') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)"
   $p = "$($Label): own title bar self-test"
-  $checks = [ordered]@{
-    "$($p): service found" = $log -match 'frame: service found'
-    "$($p): decorations off" = $log -match 'frame: decorated False'
-    "$($p): listener told at once and after the configure" =
-      ($log -match 'frame: states \$0 \(-\) capabilities \$FFFFFFFF \(unknown\)') -and
-      ($log -match 'frame: states \$[0-9A-F]+ \([^)]*\) capabilities \$[0-9A-F]+ \((?!unknown)')
-    "$($p): BeginMove, BeginResize, ShowWindowMenu False without a press" =
-      $log -match 'selftest: without a press: BeginMove False, BeginResize False, ShowWindowMenu False'
-    "$($p): drop-down (xdg_popup of an undecorated window) placed where asked" =
-      ($log -match 'selftest: drop-down open True') -and
-      ($log -match 'popup configure (-?\d+),(-?\d+) \d+x\d+ \(asked \1,\2 ')
-    "$($p): SetMaximized True: maximized state" =
-      $log -match 'frame: states \$[0-9A-F]+ \([^)]*maximized[\s\S]*selftest: maximized True'
-    "$($p): SetMaximized False: restored 640x420" = $log -match 'selftest: restored True 640x420'
-    "$($p): SetDecorated True: decorations back" = $log -match 'selftest: decorations on: decorated True'
-    # sway and KWin keep the outer size of a window whose decoration mode changes: the client area is smaller by
-    # their title bar when the decorations go (sway gives the size back with a later configure).
-    "$($p): SetDecorated False again" = $log -match ('selftest: decorations off: decorated False, client ' +
-      $(if ($Comp -in 'sway', 'sway-csd', 'kwin', 'kwin-virtual') { '\d+x\d+' } else { '640x420' }))
-    "$($p): self-test done, clean exit" = ($log -match 'selftest: done') -and ($log -match 'exit=0')
-    "$($p): no protocol errors" = $log -notmatch 'protocol error|FMXWayland: error'
-  }
+  $checks = Get-HelloOwnTitleBarChecks $log $p 720 460 $Scale $Comp
   $noMax = $log -match 'selftest: no maximize capability'
   foreach ($k in $checks.Keys) {
     if ($noMax -and ($k -match 'SetMaximized')) { "SKIP  $k (no maximize in the window manager's capabilities)" }
@@ -138,7 +118,10 @@ foreach ($run in $Runs) {
     }
     $selfLines += Get-ResultLines (Get-HelloFontChecks $log "$($label): self-test: font" $family)
   }
-  if ($Parts -contains 'frame-selftest') { $selfLines += Get-FrameSelfTestLines $out $label $comp }
+  if ($Parts -contains 'frame-selftest') {
+    $selfLines += Get-FrameSelfTestLines $out $label $comp ([double]::Parse($scale,
+      [Globalization.CultureInfo]::InvariantCulture))
+  }
   if (($Parts -contains 'early') -and ($comp -ne 'kwin-virtual')) {
     foreach ($v in 'early-popup', 'early-popup=paint', 'early-popup=create') {
       $n = $v -replace '=', '-'

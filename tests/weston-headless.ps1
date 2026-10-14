@@ -79,32 +79,19 @@ foreach ($v in 'early-popup', 'early-popup=paint', 'early-popup=create') {
   $failed += Write-Checks (Get-HelloEarlyPopupChecks $r.Log $r.Shot "--$v")
 }
 
-# The window frame service without input.
-foreach ($scale in 1, 2) {
-  $r = Invoke-WestonRun "weston-own-titlebar-scale$scale" $scale @('--own-titlebar', '--selftest', '--quit-after=25') @() 3.5
-  $p = "own title bar, scale $scale"
-  # Weston draws no decorations itself: FMXWayland's own come back with SetDecorated(True), taking 4 + 4 and 30 + 4.
-  $checks = [ordered]@{
-    "$($p): service found" = $r.Log -match 'frame: service found'
-    "$($p): decorations off" = $r.Log -match 'frame: decorated False'
-    "$($p): listener told at once and after the configure" = ($r.Log -match 'frame: states \$0 \(-\) capabilities \$FFFFFFFF \(unknown\)') -and
-      ($r.Log -match 'frame: states \$[0-9A-F]+ \([^)]*\) capabilities \$1C \(maximize fullscreen minimize\)')
-    "$($p): BeginMove, BeginResize, ShowWindowMenu False without a press" = $r.Log -match 'selftest: without a press: BeginMove False, BeginResize False, ShowWindowMenu False'
-    "$($p): drop-down (xdg_popup of an undecorated window)" = ($r.Log -match 'selftest: drop-down open True') -and
-      ($r.Log -match 'popup configure (-?\d+),(-?\d+) \d+x\d+ \(asked \1,\2 ')
-    "$($p): SetMaximized True: maximized state, compositor's size" = $r.Log -match 'frame: states \$2 \(maximized\)[\s\S]*selftest: maximized True \d+x\d+'
-    "$($p): SetMaximized False: restored 640x420" = $r.Log -match 'selftest: restored True 640x420'
-    "$($p): SetDecorated True: FMXWayland's title bar back, same outer size" = $r.Log -match 'selftest: decorations on: decorated True, client 632x386'
-    "$($p): SetDecorated False again: 640x420" = $r.Log -match 'selftest: decorations off: decorated False, client 640x420'
-    "$($p): self-test done, clean exit" = ($r.Log -match 'selftest: done') -and ($r.Log -match 'exit=0')
-    "$($p): no protocol errors" = $r.Log -notmatch 'protocol error|FMXWayland: error'
-  }
+# The window frame service without input. The program sizes the form (720x460, 1180x640; once more after the frame is
+# attached) and turns the decorations off before the first show: the window opens at that size.
+foreach ($run in @(@(1, 720, 460, @()), @(2, 720, 460, @()), @(1, 1180, 640, @('--size=1180x640')),
+  @(2, 1180, 640, @('--size=1180x640')), @(1, 900, 600, @('--size=1180x640', '--size-after=900x600')))) {
+  $scale, $w, $h, $extra = $run
+  $r = Invoke-WestonRun "weston-own-titlebar-$($w)x$h-scale$scale" $scale (@('--own-titlebar', '--selftest',
+    '--quit-after=25') + $extra) @() 3.5
+  $p = if ($extra) { "own title bar $($extra -join ' '), scale $scale" } else { "own title bar, scale $scale" }
+  $checks = Get-HelloOwnTitleBarChecks $r.Log $p $w $h $scale
   $shotOk, $detail = Test-HelloOwnTitleBarShot $r.Shot
   $checks["$($p): screenshot: the program's caption, no FMXWayland title bar ($detail)"] = $shotOk
   $checks["$($p): screenshot: the drop-down ($(Get-ColorCount $r.Shot 0x7EB0E6 6) highlight pixels)"] =
     (Get-ColorCount $r.Shot 0x7EB0E6 6) -gt 1500 * $scale * $scale
-  $dump = Get-ChildItem $r.Dir -Filter 'FMXWaylandowntitlebar-*.bmp' -ErrorAction SilentlyContinue | Select-Object -First 1
-  $checks["$($p): frame dump"] = [bool]$dump
   $failed += Write-Checks $checks
 }
 

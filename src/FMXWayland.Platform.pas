@@ -213,6 +213,9 @@ type
     // parent of an xdg_popup must be mapped before the xdg_popup itself").
     FPopupPending: Boolean;
     FPendingOffset: TPointF;
+    // Show was called once: the size is the window's from then on (before, FMX keeps the program's to itself and
+    // sets it at the first show).
+    FShownOnce: Boolean;
     procedure CreateToplevelRole;
     function DecoButtonAt(const AIndex: Integer): TWlDecoPart;
     function DecoButtonCount: Integer;
@@ -308,7 +311,8 @@ type
     /// (xdg-decoration mode client_side); the surface is all client area and the window geometry. True (default):
     /// the platform's choice again. Kept until changed. A window on the screen keeps its outer size (the client area
     /// takes or gives back the room of the decorations), one not configured yet keeps its client size; DoResized
-    /// reports the change.</summary>
+    /// reports the change. Before the first Show only the choice is recorded: no size changes, nothing reported (the
+    /// size the window gets at its show is its client area then).</summary>
     procedure SetDecorated(const AValue: Boolean);
     /// <summary>True when the toplevel has decorations now: its own (Csd) or the compositor's (xdg-decoration
     /// server_side, asked or given).</summary>
@@ -1798,8 +1802,12 @@ begin
   if (FToplevel <> nil) and ((FMinWidth > 0) or (FMinHeight > 0)) then
     SetMinSize(FMinWidth, FMinHeight);
   FDisplay.Flush;
-  // FMX's window rectangle (with the decorations) and maybe its client size changed.
-  DoResized;
+  // FMX's window rectangle (with the decorations) and maybe its client size changed. Not before the first show:
+  // FMX keeps the size the program gives the form until then and sets it at the show (SetWindowRect, the client
+  // area without the decorations' room now); bounds reported now would replace it with the window's provisional
+  // ones.
+  if FShownOnce then
+    DoResized;
 end;
 
 function TWlWindow.HasDecorations: Boolean;
@@ -2406,6 +2414,7 @@ begin
       xdg_toplevel_set_fullscreen(FToplevel, nil);
   end;
   FVisible := True;
+  FShownOnce := True;
   FConfigured := False;
   FMapped := False;
   FFullDamage := True;
