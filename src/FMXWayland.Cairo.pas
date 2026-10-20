@@ -493,27 +493,34 @@ end;
 procedure AppendPath(Cr: Pointer; Pts: PFmuxPathPoint; Count: Integer);
 var
   I: Integer;
-  P: PFmuxPathPointArray;
+  P, Control1, Control2: PFmuxPathPoint;
 begin
-  P := PFmuxPathPointArray(Pts);
+  // FMUX's path array has a declared bound of 0; walk the Count points directly
+  // so this also works with range checking enabled.
+  P := Pts;
   I := 0;
   while I < Count do
   begin
-    case P[I].Kind of
+    case P.Kind of
       TFmuxPathPointKind.MoveTo:
-        cairo_move_to(Cr, P[I].Point.X, P[I].Point.Y);
+        cairo_move_to(Cr, P.Point.X, P.Point.Y);
       TFmuxPathPointKind.LineTo:
-        cairo_line_to(Cr, P[I].Point.X, P[I].Point.Y);
+        cairo_line_to(Cr, P.Point.X, P.Point.Y);
       TFmuxPathPointKind.CurveTo:
-        if I + 2 < Count then
+        if Count - I >= 3 then
         begin
-          cairo_curve_to(Cr, P[I].Point.X, P[I].Point.Y, P[I + 1].Point.X, P[I + 1].Point.Y,
-            P[I + 2].Point.X, P[I + 2].Point.Y);
+          Control1 := P;
+          Inc(P);
+          Control2 := P;
+          Inc(P);
+          cairo_curve_to(Cr, Control1.Point.X, Control1.Point.Y, Control2.Point.X, Control2.Point.Y,
+            P.Point.X, P.Point.Y);
           Inc(I, 2);
         end;
       TFmuxPathPointKind.Close:
         cairo_close_path(Cr);
     end;
+    Inc(P);
     Inc(I);
   end;
 end;
