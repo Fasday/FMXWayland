@@ -12,6 +12,9 @@
 /// TPlatformServices.Current.SupportsPlatformService(IID, Intf). The declaration comes from FMR Ribbon
 /// (Source\Frame\FMR.Frame.Wayland.pas, Docs\LINUX.md). Do not change it: add a new interface with a new GUID
 /// instead.</remarks>
+/// <remarks>The X11 backend implements the same contract: Motif decoration hints, EWMH operations where
+/// advertised and pointer-grab/client-geometry fallbacks for legacy window managers. The interface name and GUID
+/// stay unchanged so existing Linux frame integrations (FMR Ribbon) work with either backend.</remarks>
 unit FMXWayland.Frame;
 
 interface

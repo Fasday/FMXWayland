@@ -29,6 +29,11 @@ __recovery/
 # Screenshots and frame dumps of test runs (only the ones in docs/ are committed)
 shots/
 
+# Local X11 test authentication files
+Xauthority
+.Xauthority
+*.Xauthority
+
 # OS / editors
 Thumbs.db
 desktop.ini

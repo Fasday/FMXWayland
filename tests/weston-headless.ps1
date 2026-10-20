@@ -57,7 +57,9 @@ function Invoke-WestonRun([string] $Name, [int] $Scale, [string[]] $Arguments, [
 $family = "$(wsl -d $Distro -u root -- timeout 30 fc-match -f '%{family[0]}' sans-serif)".Trim()
 
 foreach ($scale in 1, 2) {
-  $r = Invoke-WestonRun "weston-scale$scale" $scale @('--selftest', '--quit-after=25')
+  # Skia at scale 2 can finish the final dialog just before 25 s on a busy machine. Keep the completion assertion,
+  # but leave enough time for the following self-test tick to report 'done'.
+  $r = Invoke-WestonRun "weston-scale$scale" $scale @('--selftest', '--quit-after=40')
   $checks = Get-HelloSelfTestChecks $r.Log "scale $scale" $scale
   if ($Canvas) { $checks["scale $($scale): canvas $Canvas"] = $r.Log -match "\[hello\] canvas $Canvas\b" }
   $checks["scale $($scale): compositor screenshot"] = [bool]$r.Shot

@@ -5,6 +5,9 @@ closed `libfmux.so` and without GTK. FMX programs talk to the Wayland compositor
 libxkbcommon, loaded at run time) and draw into shared-memory buffers with FMX's default Linux canvas (cairo and
 Pango, as with libfmux) or, optionally, with its Skia canvas.
 
+When Wayland is unavailable, the same executable falls back to a **native X11 backend** (Xlib, no GTK or libfmux).
+See [X11 fallback](#x11-fallback) for selection, dependencies and current limitations.
+
 ![The Hello sample on WSLg](docs/screenshots/hello.png)
 
 Phase 1 (this state): an FMX program with the usual controls runs on WSLg, Weston, sway, KWin and GNOME Shell —
@@ -38,6 +41,7 @@ implements what libfmux did:
 | Unit | What it is |
 |---|---|
 | `FMXWayland.Fmux` | The FMUX functions: windows (`TFmuxWindow` forwards Wayland events to FMX's callbacks), the paint context, bitmaps, timers, the loop, clipboard, modal loops, message boxes and file dialogs (through the dialog backend), `IFMXWaylandNativeWindow` |
+| `FMXWayland.Backend`, `FMXWayland.X11`, `FMXWayland.Xlib` | Startup backend selection and native X11 fallback: dynamically loaded Xlib, XImage presentation, input, eventfd/timers, modal loops and ICCCM clipboard; shares the FMUX canvas, bitmap and dialog implementations |
 | `FMXWayland.Cairo`, `FMXWayland.CairoApi` | FMX's default Linux canvas (`FMX.Canvas.Linux`) served by the FMUX canvas, text layout, bitmap codec and font functions on the system's cairo, Pango and gdk-pixbuf (loaded with `dlopen` on first use); contributed by [Hemul GM](https://github.com/HemulGM) |
 | `FMXWayland.Platform` | The Wayland side, independent of FMX: connection and globals, outputs, the event loop (display fd + eventfd for wake-ups + timers + watched descriptors, `prepare_read`/`read_events` so other readers such as Vulkan WSI can share the display), `TWlWindow` (xdg_toplevel / xdg_popup, wl_shm double/triple buffering, frame callbacks, damage, scale, client-side decorations, export with xdg-foreign), pointer, keyboard (xkbcommon keymap, key repeat, compose/dead keys), cursors (cursor-shape-v1 or an Xcursor theme through libwayland-cursor), clipboard (wl_data_device) |
 | `FMXWayland.Dialogs`, `FMXWayland.DialogTypes`, `FMXWayland.Portal`, `FMXWayland.DBus`, `FMXWayland.FileDialog` | Dialogs behind a replaceable backend: file dialogs through the xdg-desktop-portal FileChooser (over a small D-Bus client in Pascal, no libdbus), FMX's own file dialog form when there is no portal, message dialogs and input queries with FMX's forms (see [Dialogs](#dialogs)); contributed by [Hemul GM](https://github.com/HemulGM) |
@@ -49,7 +53,7 @@ implements what libfmux did:
 | `FMXWayland.Frame` | `IFMXWaylandWindowFrame`, the contract for programs that draw their own title bar (below) |
 | `FMXWayland.SystemFont` | FMX's `IFMXSystemFontService`: the default font of `TFont` (GNOME's `font-name` through the settings portal, else fontconfig's `sans-serif`) |
 
-**Painting.** Both of FMX's Linux canvases work; the frames go to the compositor as wl_shm buffers, attached with the
+**Painting on Wayland.** Both of FMX's Linux canvases work; the frames go to the compositor as wl_shm buffers, attached with the
 damaged rectangle and committed; frame callbacks pace the repaints.
 
 - **FMX's default canvas** (`FMX.Canvas.Linux`, `TLinuxCanvas`: what an FMX program uses unless it sets
@@ -67,6 +71,80 @@ damaged rectangle and committed; frame callbacks pace the repaints.
 
 The two draw the same layout; antialiasing, hinting and Pango's line spacing differ a little
 (`tests\canvas-check.ps1` puts both side by side, below).
+
+## X11 fallback
+
+Initial X11 support; see [scope, known issues and reproducible checks](docs/X11.md).
+
+The backend is chosen at startup, before FMX creates any windows:
+
+| `FMXWAYLAND_BACKEND` | Behaviour |
+|---|---|
+| unset or `auto` | Prefer a reachable Wayland compositor; fall back to X11 if the transport or required compositor globals are unavailable. |
+| `wayland` | Require Wayland; fail rather than fall back. |
+| `x11` | Use X11 directly, including XWayland when `DISPLAY` points to it. |
+
+```sh
+./Hello                              # automatic selection
+FMXWAYLAND_BACKEND=x11 ./Hello       # requires a working DISPLAY
+FMXWAYLAND_BACKEND=wayland ./Hello   # Wayland only
+```
+
+X11 loads `libX11.so.6` on demand and uses `libxkbcommon.so.0` for Unicode/compose input. Cairo/Pango and Skia
+use the existing rendering paths; frames are uploaded with `XPutImage`. There is no dependency on libfmux or GTK,
+and a Wayland-only deployment does not need Xlib. Loss of a display connection after startup does not migrate
+existing windows to another backend.
+
+The X11 backend supports toplevels and popups, window-manager decorations, movement/resizing, maximize/minimize,
+fullscreen requests, mouse/capture/wheel, keyboard shortcuts and compose, timers and main-thread wake-ups,
+modal forms, UTF-8 text clipboard (including cross-process INCR transfers), and the existing dialogs. Portal
+dialogs receive an `x11:<window-id>` parent. Incoming clipboard transfers are limited to 16 MiB and five seconds.
+
+Transparent forms and popups use an ARGB32 visual with a matching colormap and image depth when a compositor
+is present (`libXrender.so.1` validates the alpha format). Without a compositor, the Shape extension
+(`libXext.so.6`) clips transparent padding; that fallback has binary transparency rather than soft shadows.
+
+**Current X11 limitations:** scale is 1 and the X screen is reported as one display (no per-monitor RandR/HiDPI);
+window rectangles describe the client area; no XIM/IME. Vulkan presentation through `IFMXWaylandNativeWindow`
+remains Wayland-only; the supported X11 canvases are Cairo and Skia.
+
+**Custom title bars:** the X11 backend also provides the existing `IFMXWaylandWindowFrame` contract (the name/GUID
+is retained for compatibility with FMR Ribbon). It hides/restores WM decorations, reports active/maximized state,
+and supports move, resize, minimize and maximize/restore. Modern WMs receive EWMH move/resize/state requests;
+legacy WMs such as Xming use pointer-grab-driven move/resize and client-side maximize/restore. The WM menu is
+advertised only when `_GTK_SHOW_WINDOW_MENU` is available. FMR Ribbon's Linux frame attaches to this service
+automatically: build `Demos/RibbonBasic` against this checkout and run with `/frame=fullnc`.
+
+**Tests:** build Hello with and without `-Define NOSKIA`, then run
+`bash tests/x11-headless.sh <output-directory> <absolute-path-to-Hello>` on Linux with Xvfb, Openbox, xcompmgr, xdotool,
+xclip, xrandr, ImageMagick, Python 3 and libXfixes. It checks automatic/forced selection, the Hello self-test, real
+mouse/keyboard input, clipboard exchange with xclip, resize and WM close, and saves screenshots.
+`tests/x11-modal.sh` also opens and dismisses message boxes and modal forms with mouse clicks, verifies blocked
+parent input, and checks cursor visibility and stable cursor identity during movement (`x11-cursor.py`).
+`x11-popup.sh` checks that a ComboBox list actually stays visible, including when the WM gives it keyboard focus
+(Weston/WSLg), then exercises mouse selection, outside-click dismissal and keyboard selection. Hello's greeting,
+renderer description and message box use the selected backend name (`Hello, X11!` / `XPutImage` on X11).
+`x11-alpha.py` checks the popup's drawable alpha or non-composited Shape outline. With `xcompmgr` installed,
+`X11_START_COMPOSITOR=1` enables the composited path in `x11-modal.sh` (run on a private X display).
+`x11-frame.sh` checks the custom-title-bar service: drag, edge resize, maximize/restore, minimize and close;
+`X11_LEGACY_WM=1` on a private test display hides `_NET_SUPPORTED` to exercise the legacy-WM fallbacks.
+Optionally build
+`tests/BackendCheck/BackendCheck.dpr` and pass its executable as the third argument to also test the Xlib LP64 ABI,
+early clipboard-unit initialization, large UTF-8 clipboard transfers in both directions, popup override-redirect
+at **creation** (as observed by the WM), and live screen/work-area resize. On WSLg, whose
+`/tmp/.X11-unix` is read-only, run the tests in a private mount namespace with a writable tmpfs at that path.
+The test server uses display numbers 90–189 to avoid intercepting WSLg's `:0` socket. `BackendCheck coordinates`
+checks coordinate conversion against X11 after moving a window, reparenting it into nested WM frames and moving
+those frames without client configure notifications, and measures 10,000 conversion pairs. Mouse hit-testing
+uses the client origin cached from client/ancestor events and input coordinates, without per-control X server
+round-trips. Synthetic ICCCM configure positions are authoritative; the tests also cover a compositor screen
+position different from the virtual X window tree, including subsequent frame movement and pointer input.
+Root geometry changes update the screen bounds instead of retaining Xlib's initial screen size (WSLg may start
+at 640x480). Popup windows are created with override-redirect already set, so Weston does not cache them as
+managed toplevels before their first map.
+The popup test checks its position relative to the combo before and after moving the owner. For WSLg manual
+tests, move windows by dragging their title bars: moving only the Windows-side RDP window with `SetWindowPos`
+can desynchronize it from the compositor's position.
 
 **Coordinates.** Wayland clients do not know where their windows are. Every window keeps a virtual origin (what FMX
 set with `SetWindowRect`); `ClientToScreen`/`ScreenToClient` and the screen positions of mouse events use it, so

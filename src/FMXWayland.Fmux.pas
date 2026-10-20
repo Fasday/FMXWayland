@@ -39,7 +39,8 @@ uses
   System.Generics.Collections, FMX.Types, FMX.Graphics, FMX.Forms, FMX.Controls, FMX.Dialogs, FMX.DialogHelper,
   FMX.Platform, FMX.Platform.Linux, FMUX.Api,
   FMXWayland.Log, FMXWayland.Posix, FMXWayland.Platform, FMXWayland.Native, FMXWayland.Frame,
-  FMXWayland.SystemFont, FMXWayland.Cairo, FMXWayland.DBus, FMXWayland.DialogTypes, FMXWayland.Dialogs;
+  FMXWayland.SystemFont, FMXWayland.Cairo, FMXWayland.DBus, FMXWayland.DialogTypes, FMXWayland.Dialogs,
+  FMXWayland.Backend, FMXWayland.X11;
 
 type
   /// <summary>An FMX window.</summary>
@@ -828,6 +829,22 @@ procedure WlInit(Flags: Integer); cdecl;
 var
   Services: TPlatformServices;
 begin
+  try
+    WlConnect;
+  except
+    on E: Exception do
+    begin
+      if not AllowX11Fallback then
+      begin
+        WlLog(TWlLogLevel.Error, E.Message);
+        Halt(1);
+      end;
+      WlLog(TWlLogLevel.Warning, 'Wayland unavailable: %s; trying X11', [E.Message]);
+      AssignX11Api;
+      FMUX.Api.FmuxInit(Flags);
+      Exit;
+    end;
+  end;
   Disp.WakeProc :=
     procedure
     begin
@@ -1843,6 +1860,8 @@ begin
   FMUX.Api.FmuxImeExitControl := WlImeExitControl; // partial: no-op
   FMUX.Api.FmuxImeSetCaretPos := WlImeSetCaretPos; // partial: no-op
   AssignCairoApi;
+  if PreferX11 then
+    AssignX11Api;
 end;
 
 initialization

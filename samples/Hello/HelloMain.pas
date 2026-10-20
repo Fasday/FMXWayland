@@ -111,7 +111,29 @@ implementation
 {$R *.fmx}
 
 uses
+{$IFDEF LINUX}
+  FMUX.Api,
+{$ENDIF}
   System.UIConsts, System.DateUtils, System.IOUtils, FMX.Platform, FMX.DialogService.Sync, FMX.Dialogs;
+
+function BackendName: string;
+begin
+{$IFDEF LINUX}
+  if Assigned(FMUX.Api.IsWayland) and FMUX.Api.IsWayland() then
+    Result := 'Wayland'
+  else
+    Result := 'X11';
+{$ELSE}
+  Result := 'FMX';
+{$ENDIF}
+end;
+
+function PresentationName: string;
+begin
+  Result := HelloPresentation;
+  if (Result = 'wl_shm') and (BackendName = 'X11') then
+    Result := 'XPutImage';
+end;
 
 type
   /// The contract of FMXWayland.Native.IFMXWaylandNativeWindow, declared here again (same GUID, same methods) the way
@@ -214,7 +236,7 @@ begin
   FTitle := TText.Create(Self);
   FTitle.Parent := Self;
   FTitle.SetBounds(20, 8, 460, 44);
-  FTitle.Text := 'Hello, Wayland!';
+  FTitle.Text := 'Hello, ' + BackendName + '!';
   FTitle.TextSettings.Font.Size := 30;
   FTitle.TextSettings.Font.Style := [TFontStyle.fsBold];
   FTitle.TextSettings.FontColor := TAlphaColors.Steelblue;
@@ -294,8 +316,8 @@ begin
   FResizeButton := AddButton(440, 390, 130, 'Resize 760x560', ResizeButtonClick);
   AddButton(580, 390, 110, 'Message box', MessageButtonClick);
 
-  with AddLabel(20, 440, 660, Format('FMXWayland: FMX on Wayland without libfmux and GTK; %s, %s.',
-    [TCanvasManager.DefaultCanvas.ClassName, HelloPresentation])) do
+  with AddLabel(20, 440, 660, Format('FMXWayland: FMX on %s without libfmux and GTK; %s, %s.',
+    [BackendName, TCanvasManager.DefaultCanvas.ClassName, PresentationName])) do
     TextSettings.FontColor := TAlphaColors.Gray;
 
   // File dialogs: the portal's when there is one, FMX's own otherwise.
@@ -331,6 +353,7 @@ begin
   OnDeactivate := FormDeactivate;
   Application.OnException := AppException;
   Log('created');
+  Log('backend: ' + BackendName + '; presentation: ' + PresentationName);
   Log('canvas ' + TCanvasManager.DefaultCanvas.ClassName);
   if Assigned(HelloCanvasInfo) then
     Log('canvas info: ' + HelloCanvasInfo());
@@ -606,7 +629,7 @@ var
   R: Integer;
 begin
   Log('message shown');
-  R := TDialogServiceSync.MessageDialog('Do you like FMX on Wayland?', TMsgDlgType.mtConfirmation,
+  R := TDialogServiceSync.MessageDialog('Do you like FMX on ' + BackendName + '?', TMsgDlgType.mtConfirmation,
     [TMsgDlgBtn.mbYes, TMsgDlgBtn.mbNo], TMsgDlgBtn.mbYes, 0);
   Log(Format('message result %d', [R]));
   FClipLabel.Text := Format('Message result: %d', [R]);
